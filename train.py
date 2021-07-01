@@ -38,6 +38,7 @@ class AverageMeter(object):
 
 
 class SkeletonLoss:
+    """Computes the loss of skeleton formed of dis_map and flux_map"""
     def __init__(
             self,
             lambda_hm=1.0,
@@ -86,6 +87,7 @@ class SkeletonLoss:
 def main(args):
     best_acc = 0
 
+    # Create the model
     print("\nCREATE NETWORK")
     model = NetStackedHourglass()
     model = model.to(device)
@@ -102,6 +104,7 @@ def main(args):
         lr=args.learning_rate,
     )
 
+    # Load the data
     print("\nCREATE DATASET...")
     hand_crop, hand_flip, use_wrist, BL, root_id, rotate, uv_sigma = True, True, True, 'small', 12, 180, 0.0
     train_dataset = RHD_DataReader(path=args.data_root, mode='training', hand_crop=hand_crop, use_wrist_coord=use_wrist,
@@ -140,6 +143,7 @@ def main(args):
         last_epoch=args.start_epoch
     )
 
+    # Start training
     for epoch in range(args.start_epoch, args.epochs + 1):
         print('\nEpoch: %d' % (epoch + 1))
         for i in range(len(optimizer.param_groups)):
@@ -152,9 +156,10 @@ def main(args):
             optimizer,
             args=args,
         )
-
+    
+    # Validate the correctness of every 5 epoches
         acc_hm = best_acc
-        if epoch >= 50 and epoch % 5 == 0:
+        if epoch >= 10 and epoch % 5 == 0:
             acc_hm = validate(val_loader, model, criterion, args=args)
         if acc_hm > best_acc:
             best_acc = acc_hm
@@ -166,6 +171,7 @@ def main(args):
 
 
 def one_forward_pass(sample, model, criterion, args, is_training=True):
+    # forward pass the sample into the model and compute the loss of corresponding sample
     """ prepare target """
     img = sample['img_crop'].to(device, non_blocking=True)
     kp2d = sample['uv_crop'].to(device, non_blocking=True)
@@ -204,14 +210,19 @@ def train(train_loader, model, criterion, optimizer, args):
     am_loss_hm = AverageMeter()
 
     last = time.time()
+    
     # switch to train mode
     model.train()
+
+    # Create the bar to record the progress
     bar = Bar('\033[31m Train \033[0m', max=len(train_loader))
     for i, sample in enumerate(train_loader):
         data_time.update(time.time() - last)
         results, targets, loss = one_forward_pass(
             sample, model, criterion, args, is_training=True
         )
+
+        # Update the skeleton loss after each sample
         am_loss_hm.update(
             loss.item(), targets['batch_size']
         )
@@ -245,6 +256,8 @@ def train(train_loader, model, criterion, optimizer, args):
 
 
 def val_loss(preds, targs, args):
+    # compute the loss when validating
+    
     batch_size = args.train_batch
 
     # compute hm_loss anyway
