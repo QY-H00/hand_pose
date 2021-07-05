@@ -2,7 +2,8 @@
 
 ### Todo
 1. Offline data processing
-  - write an independent function, which inputs 2D keypoint, heatmap size and generates flux map and distance map. 
+  - write an independent function, which inputs 2D keypoint, heatmap size and generates flux map and distance map.
+  - save the heatmap with correspond id so that we can load it during the init of dataloader 
 
 2. Validation indicators
   - we may use 2D distant (EPE) in the original images. In this case, we need a function to project our prediction back to the original image coordinate. I attached my function in the folder named for inference.
