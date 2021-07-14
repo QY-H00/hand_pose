@@ -8,14 +8,14 @@ from __future__ import print_function
 import cv2, pickle
 import os.path as osp
 import numpy as np
-from skimage import io, transform
+from skimage import io
 import torch
-from torch.utils.data import Dataset, DataLoader
-from torchvision import transforms, utils
+from torch.utils.data import Dataset
+from torchvision import transforms
 import torchvision.transforms.functional as TF
-import eval_utils
+from data import eval_utils
 
-__all__ = ["RHD_DataReader"]
+__all__ = ["RHD_DataReader", "RHD_DataReader_With_File"]
 
 
 def get_hand_flag(hand_parts):
@@ -44,6 +44,50 @@ def coord_normalize(coord, root_id, BL):
     coord_norm = coord_rel / bone_length  # normalized by length of 12->11(12->0)
 
     return coord_norm, bone_length
+
+
+class RHD_DataReader_With_File(Dataset):
+
+    def __init__(self, path=None, mode=None):
+        assert (mode == 'training' or mode == 'evaluation'), RuntimeError('Unrecognized mode')
+        self.path, self.mode = path, mode
+
+        if mode == 'evaluation':
+            # path_to_anno is the path it goes into the corresponding folder in the RHD foloder
+            path_to_anno = f'processed_data_{mode}.pickle' if path is None else osp.join(path,
+                                                                                         f'processed_data_{mode}.pickle')
+            fi = open(path_to_anno, 'rb')
+            self.anno_all_evaluation = pickle.load(fi)
+            fi.close()
+
+        if mode == 'training':
+            self.anno_all = [None] * 21
+            path_to_anno = [None] * 21
+            for i in range(21):
+                path_to_anno[i] = f'processed_data_{mode}_{i}.pickle' if path is None \
+                    else osp.join(path, f'processed_data_{mode}_{i}.pickle')
+                fi = open(path_to_anno[i], 'rb')
+                self.anno_all[i] = pickle.load(fi)
+                fi.close()
+
+    def __len__(self):
+        if self.mode == 'evaluation':
+            return int(len(self.anno_all_evaluation))
+        else:
+            res = 0
+            for i in range(21):
+                hi = self.anno_all[i]
+                res += int(len(hi))
+            return res
+
+    def __getitem__(self, idx):
+        if self.mode == 'evaluation':
+            return self.anno_all_evaluation[idx]
+        else:
+            interval = self.__len__() // 20
+            slot = idx // interval
+            pos = idx % interval
+            return self.anno_all[slot][pos]
 
 
 class RHD_DataReader(Dataset):
@@ -109,7 +153,7 @@ class RHD_DataReader(Dataset):
         return int(len(self.anno_all.items()))
 
     def __getitem__(self, idx):
-        
+
         """READ DATA"""
         # 1. read image
         # {'%.5d.png' % idx} means if idx is 1234, then it should be 01234.png
@@ -205,7 +249,7 @@ class RHD_DataReader(Dataset):
             crop_size = np.max(2 * np.maximum(max_coord - crop_center, crop_center - min_coord))
             crop_size = 1.2 * np.clip(crop_size, 30, 500)
             crop_center_tmp = 0.5 * (
-                        min_coord + max_coord)  # using this will make the whole hand in the center of picture
+                    min_coord + max_coord)  # using this will make the whole hand in the center of picture
 
             m_coord = np.tile(crop_center_tmp.reshape(-1, 1), [1, 2]) + np.array(
                 [-crop_size / 2, crop_size / 2]).reshape(2, )

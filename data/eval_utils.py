@@ -1,4 +1,5 @@
 import torch
+import torch.functional as F
 import numpy as np
 
 
@@ -16,6 +17,10 @@ def calc_dists(preds, target, normalize, mask):
                 dists[j, b] = torch.dist(preds[b, j, :], target[b, j, :]) / normalize[b]
 
     return dists
+
+
+def MeanEPE(x, y):
+    return torch.mean(F.pairwise_distance(x.permute(0, 2, 1), y.permute(0, 2, 1), p=2))
 
 
 def dist_acc(dist, thr=0.5):
@@ -174,103 +179,6 @@ def normalize(v):
     if norm == 0:
         return v, norm
     return v / norm, norm
-
-
-# def parse_kp2d_to_parse_skeleton(kp):
-#     skeleton = np.zeros([21, 3])
-#     wrist_coor = kp[0]
-#     # 0-4 4-3 3-2 2-1
-#     for j in range(5):
-#         phalanx = kp[4 * j + 4] - wrist_coor
-#         direction, length = normalize(phalanx)
-#         skeleton[4 * j][:2] = direction
-#         skeleton[4 * j][2] = length
-#         for i in range(3):
-#             curr_kp = 4 * j + 4 - i
-#             phalanx = kp[curr_kp - 1] - kp[curr_kp]
-#             direction, length = normalize(phalanx)
-#             skeleton[4 * j + i + 1][:2] = direction
-#             skeleton[4 * j + i + 1][2] = length
-#     skeleton[20][:2] = wrist_coor
-#     skeleton[20][2] = 0
-#     return skeleton
-#
-#
-# def parse_skeleton_to_parse_kp2d(skeleton):
-#     kp = np.zeros([21, 2])
-#     wrist_coor = skeleton[20][:2]
-#     kp[0] = wrist_coor
-#     for j in range(5):
-#         kp[4 * j + 4] = wrist_coor + skeleton[4 * j][:2] * skeleton[4 * j][2]
-#         kp[4 * j + 3] = kp[4 * j + 4] + skeleton[4 * j + 1][:2] * skeleton[4 * j + 1][2]
-#         kp[4 * j + 2] = kp[4 * j + 3] + skeleton[4 * j + 2][:2] * skeleton[4 * j + 2][2]
-#         kp[4 * j + 1] = kp[4 * j + 2] + skeleton[4 * j + 3][:2] * skeleton[4 * j + 3][2]
-#     return kp
-#
-#
-# def parse_kp2d_to_dense_skeleton(kp, res=64, sigma=1):
-#     dense_skeleton = np.zeros([20, res, res, 5])
-#     wrist_coor = kp[0]
-#     pixels = np.zeros([res, res, 2])
-#     pixels[:, :, 0] = range(res)
-#     pixels[:, :, 1] = range(res)
-#
-#     # 0-4 4-3 3-2 2-1
-#     for j in range(5):
-#         second_point = kp[4 * j + 4]
-#         first_point = wrist_coor
-#         phalanx = second_point - first_point
-#         direction, length = normalize(phalanx)
-#         dense_skeleton[4 * j + 4, :, :, 0] = is_on_skeleton(pixels, direction, length, first_point, sigma)
-#         dense_skeleton[4 * j + 4, :, :, 1:3] = direction if dense_skeleton[4 * j + 4, :, :, 0] else 0
-#         dense_skeleton[4 * j + 4, :, :, 3] = normalize(second_point - pixels)[1] if dense_skeleton[4 * j + 4, :, :, 0] \
-#             else 0
-#         dense_skeleton[4 * j + 4, :, :, 4] = normalize(pixels - first_point)[1] if dense_skeleton[4 * j + 4, :, :, 0] \
-#             else 0
-#         for i in range(3):
-#             curr = 4 * j + 4 - i
-#             first_point = kp[curr]
-#             second_point = kp[curr - 1]
-#             phalanx = second_point - first_point
-#             direction, length = normalize(phalanx)
-#             dense_skeleton[4 * j + i + 1, :, :, 0] = is_on_skeleton(pixels, direction, length, first_point, sigma)
-#             dense_skeleton[4 * j + i + 1, :, :, 1:3] = direction if dense_skeleton[4 * j + 4, :, :, 0] else 0
-#             dense_skeleton[4 * j + i + 1, :, :, 3] = normalize(second_point - pixels)[1] \
-#                 if dense_skeleton[4 * j + 4, :, :, 0] else 0
-#             dense_skeleton[4 * j + i + 1, :, :, 4] = normalize(pixels - first_point)[1] \
-#                 if dense_skeleton[4 * j + 4, :, :, 0] else 0
-#     return dense_skeleton
-#
-#
-# def dense_skeleton_to_parse_kp2d(dense_skeleton, res=64, sigma=1):
-#     kp = np.zeros([21, 2])
-#     count = 0
-#     kp[0] = 0
-#     for i in range(5):
-#         count += np.sum(dense_skeleton[4 * i, :, :, 0])
-#         kp[0] += dense_skeleton[4 * i, :, :, 0] * dense_skeleton[4 * i, :, :, 1:3] * dense_skeleton[4 * i, :, :, 4]
-#     kp[0] = kp[0] / count
-#
-#     for j in range(5):
-#         count = np.sum(dense_skeleton[4 * j + 0, :, :, 0]) + np.sum(dense_skeleton[4 * j + 1, :, :, 0])
-#         kp[4 * j + 4] = (dense_skeleton[4 * j + 0, :, :, 0]
-#                          * dense_skeleton[4 * j + 0, :, :, 1:3] * dense_skeleton[4 * j + 0, :, :, 3]
-#                          + dense_skeleton[4 * j + 1, :, :, 0]
-#                          * dense_skeleton[4 * j + 1, :, :, 1:3] * dense_skeleton[4 * j + 1, :, :, 4]) / count
-#         count = np.sum(dense_skeleton[4 * j + 1, :, :, 0]) + np.sum(dense_skeleton[4 * j + 2, :, :, 0])
-#         kp[4 * j + 3] = (dense_skeleton[4 * j + 1, :, :, 0]
-#                          * dense_skeleton[4 * j + 1, :, :, 1:3] * dense_skeleton[4 * j + 1, :, :, 3]
-#                          + dense_skeleton[4 * j + 2, :, :, 0]
-#                          * dense_skeleton[4 * j + 2, :, :, 1:3] * dense_skeleton[4 * j + 2, :, :, 4]) / count
-#         count = np.sum(dense_skeleton[4 * j + 2, :, :, 0]) + np.sum(dense_skeleton[4 * j + 3, :, :, 0])
-#         kp[4 * j + 2] = (dense_skeleton[4 * j + 2, :, :, 0]
-#                          * dense_skeleton[4 * j + 2, :, :, 1:3] * dense_skeleton[4 * j + 2, :, :, 3]
-#                          + dense_skeleton[4 * j + 3, :, :, 0]
-#                          * dense_skeleton[4 * j + 3, :, :, 1:3] * dense_skeleton[4 * j + 3, :, :, 4]) / count
-#         count = np.sum(dense_skeleton[4 * j + 3, :, :, 0])
-#         kp[4 * j + 1] = (dense_skeleton[4 * j + 3, :, :, 0]
-#                          * dense_skeleton[4 * j + 3, :, :, 1:3] * dense_skeleton[4 * j + 3:, :, 3]) / count
-#     return kp
 
 
 def is_on_skeleton(res, direction, length, first_point, sigma=1):

@@ -1,4 +1,3 @@
-import os
 import argparse
 import time
 import torch
@@ -9,10 +8,12 @@ import torch.nn.functional as torch_f
 import torch.optim
 from progress.bar import Bar
 from termcolor import cprint
+import pickle
 
-import eval_utils
+from data import eval_utils
 from models.hourglass import NetStackedHourglass
 from data.RHD import RHD_DataReader
+from data.RHD import RHD_DataReader_With_File
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 cudnn.benchmark = True
@@ -104,33 +105,77 @@ def main(args):
         lr=args.learning_rate,
     )
 
-    # Load the data
     print("\nCREATE DATASET...")
-    hand_crop, hand_flip, use_wrist, BL, root_id, rotate, uv_sigma = True, True, True, 'small', 12, 180, 0.0
-    train_dataset = RHD_DataReader(path=args.data_root, mode='training', hand_crop=hand_crop, use_wrist_coord=use_wrist,
-                                   sigma=5,
-                                   data_aug=False, uv_sigma=uv_sigma, rotate=rotate, BL=BL, root_id=root_id,
-                                   right_hand_flip=hand_flip, crop_size_input=256)
-    val_dataset = RHD_DataReader(path=args.data_root, mode='evaluation', hand_crop=hand_crop, use_wrist_coord=use_wrist,
-                                 sigma=5,
-                                 data_aug=False, uv_sigma=uv_sigma, rotate=rotate, BL=BL, root_id=root_id,
-                                 right_hand_flip=hand_flip, crop_size_input=256)
 
-    print("Total train dataset size: {}".format(len(train_dataset)))
-    print("Total test dataset size: {}".format(len(val_dataset)))
+    # The argument needed to process the data
+    hand_crop, hand_flip, use_wrist, BL, root_id, rotate, uv_sigma = True, True, True, 'small', 12, 180, 0.0
+
+    '''Generate evaluation dataset'''
+    eval_dataset = []
+    if args.process_evaluation_data:
+
+        eval_dataset = RHD_DataReader(path=args.data_root, mode='evaluation', hand_crop=hand_crop,
+                                      use_wrist_coord=use_wrist,
+                                      sigma=5,
+                                      data_aug=False, uv_sigma=uv_sigma, rotate=rotate, BL=BL, root_id=root_id,
+                                      right_hand_flip=hand_flip, crop_size_input=256)
+        evaluation_data = list(range(len(eval_dataset)))
+        for i in range(len(eval_dataset)):
+            print(i, "validation data finished")
+            evaluation_data[i] = eval_dataset.__getitem__(i)
+        evaluation_data_file = open(f'data/processed_data_evaluation.pickle', 'wb')
+        pickle.dump(evaluation_data, evaluation_data_file, protocol=pickle.HIGHEST_PROTOCOL)
+        evaluation_data_file.close()
+
+    eval_dataset = RHD_DataReader_With_File(mode="evaluation", path="data")
+    print("Total test dataset size: {}".format(len(eval_dataset)))
 
     print("\nLOAD DATASET...")
+
+    val_loader = torch.utils.data.DataLoader(
+        eval_dataset,
+        batch_size=args.test_batch,
+        shuffle=True,
+        num_workers=args.workers,
+        pin_memory=True
+    )
+
+    '''Generate training dataset'''
+    train_dataset = []
+    if args.process_training_data:
+        train_dataset = RHD_DataReader(path=args.data_root, mode='training', hand_crop=hand_crop,
+                                       use_wrist_coord=use_wrist,
+                                       sigma=5,
+                                       data_aug=False, uv_sigma=uv_sigma, rotate=rotate, BL=BL, root_id=root_id,
+                                       right_hand_flip=hand_flip, crop_size_input=256)
+        print("Total train dataset size: {}".format(len(train_dataset)))
+        training_data = list(range(21))
+        training_data_file = list(range(21))
+        interval = len(train_dataset) // 20
+        for i in range(20):
+            training_data[i] = list(range(interval))
+        left = len(train_dataset) % 20
+        print("interval", interval, "left", left)
+        training_data[20] = list(range(left))
+
+        for i in range(len(train_dataset)):
+            slot = i // interval
+            pos = i % interval
+            training_data[slot][pos] = train_dataset.__getitem__(i)
+            print("slot:", slot, "pos:", pos, f"training data {i} finished")
+
+        for i in range(21):
+            training_data_file[i] = open(f'data/processed_data_training_{i}.pickle', 'wb')
+            pickle.dump(training_data[i], training_data_file[i], protocol=pickle.HIGHEST_PROTOCOL)
+            training_data_file[i].close()
+
+    train_dataset = RHD_DataReader_With_File(mode="training", path="data")
+    # print("Total train dataset size: {}".format(len(train_dataset)))
+
     train_loader = torch.utils.data.DataLoader(
         train_dataset,
         batch_size=args.train_batch,
         shuffle=False,
-        num_workers=args.workers,
-        pin_memory=True
-    )
-    val_loader = torch.utils.data.DataLoader(
-        val_dataset,
-        batch_size=args.test_batch,
-        shuffle=True,
         num_workers=args.workers,
         pin_memory=True
     )
@@ -155,16 +200,19 @@ def main(args):
             criterion,
             optimizer,
             args=args,
+            epoch=epoch
         )
     
-    # Validate the correctness of every 5 epoches
+    # Validate the correctness of every 5 epochs
         acc_hm = best_acc
-        if epoch >= 10 and epoch % 5 == 0:
-            acc_hm = validate(val_loader, model, criterion, args=args)
+        if epoch % 5 == 0:
+            # acc_hm = validate(val_loader, model, criterion, args=args)
+            print(f'Save skeleton_model.pkl after {epoch} epochs')
+            torch.save(model, f'skeleton_model_after_{epoch}_epochs.pkl')
         if acc_hm > best_acc:
             best_acc = acc_hm
         scheduler.step()
-    print("\nSave model as skeleton_model.pkl...")
+    print("Save skeleton_model.pkl after total training")
     torch.save(model, 'skeleton_model.pkl')
     cprint('All Done', 'yellow', attrs=['bold'])
     return 0  # end of main
@@ -204,7 +252,7 @@ def one_forward_pass(sample, model, criterion, args, is_training=True):
         return results, {**targets, **infos}, loss
 
 
-def train(train_loader, model, criterion, optimizer, args):
+def train(train_loader, model, criterion, optimizer, args, epoch):
     batch_time = AverageMeter()
     data_time = AverageMeter()
     am_loss_hm = AverageMeter()
@@ -237,12 +285,14 @@ def train(train_loader, model, criterion, optimizer, args):
         last = time.time()
         bar.suffix = (
             '({batch}/{size}) '
+            'epoch: {epoch:}s | '
             'd: {data:.2f}s | '
             'b: {bt:.2f}s | '
             't: {total:}s | '
             'eta:{eta:}s | '
             'lH: {lossH:.5f} | '
         ).format(
+            epoch=epoch,
             batch=i + 1,
             size=len(train_loader),
             data=data_time.avg,
@@ -299,22 +349,35 @@ def validate(val_loader, model, criterion, args, stop=-1):
     with torch.no_grad():
         for i, metas in enumerate(val_loader):
             results, targets, loss = one_forward_pass(
-                metas, model, criterion, args=None, is_training=False
+                metas, model, criterion, args=args, is_training=False
             )
-            avg_acc_hm, _ = eval_utils.accuracy_heatmap(
-                results[-1],
-                targets['hm'],
-                targets['hm_veil']
-            )
+            pred_skeleton = results[-1]
+            targs_flux = targets['flux_map']  # (B, 20, res, res, 3)
+            targs_dis = targets['dis_map']  # (B, 20, res, res, 2)
+
+            flux_dimension = targs_flux.shape[-1]
+            dis_dimension = targs_dis.shape[-1]
+            count_phalanges = 20
+            total_dimension = flux_dimension + dis_dimension
+
+            pred_maps = pred_skeleton.reshape((args.train_batch, count_phalanges, -1, total_dimension))  # (B, 20, res*res, 5)
+            # split it into (B, 20, res*res, 3) and (B, 20, res*res, 2)
+            pred_maps = torch.split(pred_maps, split_size_or_sections=[3, 2], dim=-1)
+            pred_flux = pred_maps[0].split(split_size=1, dim=1)  # tuple of (B, 1, res*res, 3), len=20
+            pred_dis = pred_maps[1].split(split_size=1, dim=1)  # tuple of (B, 1, res*res, 2), len=20
+            pred_kp = eval_utils.maps_to_kp(pred_flux, pred_dis)
+            targs_kp = eval_utils.maps_to_kp(targs_flux, targs_dis)
+            val = eval_utils.MeanEPE(pred_kp, targs_kp)
+
             bar.suffix = (
                 '({batch}/{size}) '
                 'accH: {accH:.4f} | '
             ).format(
                 batch=i + 1,
                 size=len(val_loader),
-                accH=avg_acc_hm,
+                accH=val,
             )
-            am_accH.update(avg_acc_hm, args.train_batch)
+            am_accH.update(val, args.train_batch)
             bar.next()
             if stop != -1 and i >= stop:
                 break
@@ -333,6 +396,22 @@ if __name__ == '__main__':
         type=str,
         default='RHD_published_v2',
         help='dataset root directory'
+    )
+
+    # Dataset setting
+    parser.add_argument(
+        '--process_training_data',
+        default=False,
+        action='store_true',
+        help='true if the data has been processed'
+    )
+
+    # Dataset setting
+    parser.add_argument(
+        '--process_evaluation_data',
+        default=False,
+        action='store_true',
+        help='true if the data has been processed'
     )
 
     # Model Structure
@@ -382,6 +461,15 @@ if __name__ == '__main__':
         help='show intermediate results'
     )
 
+    # Dataset setting
+    parser.add_argument(
+        '-cc',
+        '--checking_cycle',
+        type=int,
+        default=5,
+        help='How many batches to save the model at once'
+    )
+
     # Training Parameters
     parser.add_argument(
         '-j', '--workers',
@@ -406,14 +494,14 @@ if __name__ == '__main__':
     )
     parser.add_argument(
         '-b', '--train_batch',
-        default=4,
+        default=32,
         type=int,
         metavar='N',
         help='train batch size'
     )
     parser.add_argument(
         '-tb', '--test_batch',
-        default=4,
+        default=32,
         type=int,
         metavar='N',
         help='test batch size'
@@ -444,13 +532,6 @@ if __name__ == '__main__':
         default=['seed'],
         type=str,
         help="sub modules contained in model"
-    )
-    parser.add_argument(
-        '--ups_loss',
-        dest='ups_loss',
-        action='store_true',
-        help='Calculate upstream loss',
-        default=True
     )
 
     main(parser.parse_args())

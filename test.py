@@ -1,18 +1,12 @@
 import argparse
 import torch.backends.cudnn as cudnn
 import torch.optim
-import os.path as osp
 import numpy as np
-from skimage import io
 import matplotlib.pyplot as plt
 import seaborn as sns
 import cv2
-import sys
-from data.RHD import RHD_DataReader
-import eval_utils
-from torchvision import transforms
-
-from torch import FloatTensor
+from data.RHD import RHD_DataReader, RHD_DataReader_With_File
+from models.hourglass import NetStackedHourglass
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 cudnn.benchmark = True
@@ -90,7 +84,7 @@ def vis(img, kp2d):
     plt.show()
 
 
-def draw_maps(flux, dis):
+def draw_maps(flux, dis, idx):
     direction = np.zeros([flux.shape[1], flux.shape[2]])
     magnitude = np.zeros([flux.shape[1], flux.shape[2]])
     dis_to_first = np.zeros([dis.shape[1], dis.shape[2]])
@@ -138,37 +132,29 @@ def draw_maps(flux, dis):
     sns.heatmap(data=dis_to_second)
     plt.show()
 
+    plt.savefig(f"maps_{idx}.jpg")
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
         description='PyTorch Test Hourglass On 2D Keypoint Detection')
-    # Dataset setting
-    # parser.add_argument(
-    #     '-img',
-    #     '--image_path',
-    #     type=str,
-    #     default="00003.png",
-    #     help='input image'
-    # )
     args = parser.parse_args()
     hand_crop, hand_flip, use_wrist, BL, root_id, rotate, uv_sigma = True, True, True, 'small', 12, 180, 0.0
-    train_dataset = RHD_DataReader(path="RHD_published_v2", mode='training', hand_crop=hand_crop, use_wrist_coord=use_wrist,
-                                   sigma=5,
-                                   data_aug=False, uv_sigma=uv_sigma, rotate=rotate, BL=BL, root_id=root_id,
-                                   right_hand_flip=hand_flip, crop_size_input=256)
-    val_dataset = RHD_DataReader(path="RHD_published_v2", mode='training', hand_crop=hand_crop, use_wrist_coord=use_wrist,
-                                 sigma=5,
-                                 data_aug=False, uv_sigma=uv_sigma, rotate=rotate, BL=BL, root_id=root_id,
-                                 right_hand_flip=hand_flip, crop_size_input=256)
-    train_loader = torch.utils.data.DataLoader(
-        train_dataset,
-        batch_size=4,
-        shuffle=False,
-        pin_memory=True
-    )
+    # train_dataset = RHD_DataReader(path="RHD_published_v2", mode='training', hand_crop=hand_crop, use_wrist_coord=use_wrist,
+    #                                sigma=5,
+    #                                data_aug=False, uv_sigma=uv_sigma, rotate=rotate, BL=BL, root_id=root_id,
+    #                                right_hand_flip=hand_flip, crop_size_input=256)
+    # train_loader = torch.utils.data.DataLoader(
+    #     train_dataset,
+    #     batch_size=4,
+    #     shuffle=False,
+    #     pin_memory=True
+    # )
+
+    val_dataset = RHD_DataReader_With_File(mode="training", path=None)
     val_loader = torch.utils.data.DataLoader(
         val_dataset,
-        batch_size=4,
+        batch_size=32,
         shuffle=False,
         pin_memory=True
     )
@@ -177,46 +163,24 @@ if __name__ == '__main__':
     hm_example = []
     kp_example = None
     image = []
-    for i, sample in enumerate(train_loader):
-        if i == 1:
-            image = sample["img_crop"][0]
-            hm_example = sample["hm"][0]
-            kp_example = sample["uv_crop"][0]
-            print(kp_example)
-            mask = sample["mask_crop"][0]
-            flux_map = sample["flux_map"][0]
-            dis_map = sample["dis_map"][0]
+    flux = []
+    dis = []
+    for i, sample in enumerate(val_loader):
+        if i == 0:
+            image = sample["img_crop"]
+            flux = sample["flux_map"]
+            dis = sample["dis_map"]
             break
-        print("finish sample ", i)
-    kp = kp_example.detach().cpu().numpy()
-    flux_map = flux_map.numpy()
-    dis_map = dis_map.numpy()
-    # draw_maps(flux_map, dis_map)
-    kp = eval_utils.maps_to_kp(flux_map, dis_map, res=64)
-    
-    kp = kp * 4
-    print(kp.astype(int))
-    # image = image.reshape(1, 3, 256, 256)
-    # mask = FloatTensor(mask).to(device, non_blocking=True)
-    # unloader = transforms.ToPILImage()
-    # mask = unloader(mask)
-    # mask.save('image.jpg')
-    # print(image.shape)
-    # trained_model = torch.load("hourglass_model.pkl")
-    # trained_model.eval()
-    # out, _ = trained_model(image)
-    # hm = out[-1][0]
-    # image_copy = hm_example[0].cpu().clone()  # clone the tensor
-    # image_copy = image_copy.squeeze(0)  # remove the fake batch dimension
-    # image_copy = unloader(image_copy)
-    # image_copy.save('heatmap.jpg')
-    # image = image.reshape(3, 256, 256)
-    # image_copy = image.cpu().clone()  # clone the tensor
-    # image_copy = image_copy.squeeze(0)  # remove the fake batch dimension
-    # image_copy = unloader(image_copy)
-    # image_copy.save('example.jpg')
-    # kp2d = transform_hm_to_kp2d(hm_example)
-    # print(kp2d[0])
-    # kp_example = np.array(kp_example / 4, dtype=int)
-    # print(kp_example[0])
-    # vis('image.jpg', kp2d)
+
+    # Create the model
+    model = torch.load("skeleton_model_after_95_epochs.pkl")
+    model = model.to(device)
+    preds = model(image)
+    final_pred = preds[0][-1]
+    pred_maps = final_pred.reshape((32, 20, -1, 5))  # (B, 20, res*res, 5)
+    # split it into (B, 20, res*res, 3) and (B, 20, res*res, 2)
+    pred_maps = torch.split(pred_maps, split_size_or_sections=[3, 2], dim=-1)
+    pred_flux = pred_maps[0].reshape((32, 20, 64, 64, 3))
+    pred_dis = pred_maps[1].reshape((32, 20, 64, 64, 2))
+    draw_maps(pred_flux[0], pred_dis[0], "pred")
+    draw_maps(flux[0], dis[0], "test")
