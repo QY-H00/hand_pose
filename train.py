@@ -12,6 +12,7 @@ import pickle
 
 from data import eval_utils
 from models.hourglass import NetStackedHourglass
+import process_data
 from data.RHD import RHD_DataReader
 from data.RHD import RHD_DataReader_With_File
 
@@ -113,19 +114,7 @@ def main(args):
     '''Generate evaluation dataset'''
     eval_dataset = []
     if args.process_evaluation_data:
-
-        eval_dataset = RHD_DataReader(path=args.data_root, mode='evaluation', hand_crop=hand_crop,
-                                      use_wrist_coord=use_wrist,
-                                      sigma=5,
-                                      data_aug=False, uv_sigma=uv_sigma, rotate=rotate, BL=BL, root_id=root_id,
-                                      right_hand_flip=hand_flip, crop_size_input=256)
-        evaluation_data = list(range(len(eval_dataset)))
-        for i in range(len(eval_dataset)):
-            print(i, "validation data finished")
-            evaluation_data[i] = eval_dataset.__getitem__(i)
-        evaluation_data_file = open(f'data/processed_data_evaluation.pickle', 'wb')
-        pickle.dump(evaluation_data, evaluation_data_file, protocol=pickle.HIGHEST_PROTOCOL)
-        evaluation_data_file.close()
+        process_data.process_evaluation_data(args)
 
     eval_dataset = RHD_DataReader_With_File(mode="evaluation", path="data")
     print("Total test dataset size: {}".format(len(eval_dataset)))
@@ -143,31 +132,7 @@ def main(args):
     '''Generate training dataset'''
     train_dataset = []
     if args.process_training_data:
-        train_dataset = RHD_DataReader(path=args.data_root, mode='training', hand_crop=hand_crop,
-                                       use_wrist_coord=use_wrist,
-                                       sigma=5,
-                                       data_aug=False, uv_sigma=uv_sigma, rotate=rotate, BL=BL, root_id=root_id,
-                                       right_hand_flip=hand_flip, crop_size_input=256)
-        print("Total train dataset size: {}".format(len(train_dataset)))
-        training_data = list(range(21))
-        training_data_file = list(range(21))
-        interval = len(train_dataset) // 20
-        for i in range(20):
-            training_data[i] = list(range(interval))
-        left = len(train_dataset) % 20
-        print("interval", interval, "left", left)
-        training_data[20] = list(range(left))
-
-        for i in range(len(train_dataset)):
-            slot = i // interval
-            pos = i % interval
-            training_data[slot][pos] = train_dataset.__getitem__(i)
-            print("slot:", slot, "pos:", pos, f"training data {i} finished")
-
-        for i in range(21):
-            training_data_file[i] = open(f'data/processed_data_training_{i}.pickle', 'wb')
-            pickle.dump(training_data[i], training_data_file[i], protocol=pickle.HIGHEST_PROTOCOL)
-            training_data_file[i].close()
+        process_data.process_training_data(args)
 
     train_dataset = RHD_DataReader_With_File(mode="training", path="data")
     # print("Total train dataset size: {}".format(len(train_dataset)))
@@ -204,13 +169,13 @@ def main(args):
         )
     
     # Validate the correctness of every 5 epochs
-        acc_hm = best_acc
+        val_indicator = best_acc
         if epoch % 5 == 0:
-            # acc_hm = validate(val_loader, model, criterion, args=args)
+            val_indicator = validate(val_loader, model, criterion, args=args)
             print(f'Save skeleton_model.pkl after {epoch} epochs')
             torch.save(model, f'skeleton_model_after_{epoch}_epochs.pkl')
-        if acc_hm > best_acc:
-            best_acc = acc_hm
+        if val_indicator > best_acc:
+            best_acc = val_indicator
         scheduler.step()
     print("Save skeleton_model.pkl after total training")
     torch.save(model, 'skeleton_model.pkl')
@@ -508,7 +473,7 @@ if __name__ == '__main__':
     )
 
     parser.add_argument(
-        '-lr', '--learning-rate',
+        '-lr', '--learning_rate',
         default=1.0e-4,
         type=float,
         metavar='LR',
