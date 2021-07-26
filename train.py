@@ -1,19 +1,20 @@
 import argparse
 import time
+import random
+import os.path as osp
 import torch
 import torch.utils.data
 import torch.nn.parallel
 import torch.backends.cudnn as cudnn
-import torch.nn.functional as torch_f
 import torch.optim
+
+from tensorboardX import SummaryWriter
 from progress.bar import Bar
 from termcolor import cprint
-import pickle
 
+import process_data
 from data import eval_utils
 from models.hourglass import NetStackedHourglass
-import process_data
-from data.RHD import RHD_DataReader
 from data.RHD import RHD_DataReader_With_File
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -41,58 +42,55 @@ class AverageMeter(object):
 
 class SkeletonLoss:
     """Computes the loss of skeleton formed of dis_map and flux_map"""
+
     def __init__(
             self,
-            lambda_hm=1.0,
-            lambda_mask=1.0,
-            lambda_joint=1.0,
-            lambda_dep=1.0,
+            lambda_dis=1.0,
+            lambda_kps=1.0,
+            lambda_flux=1.0,
+            lambda_mask=1.0
     ):
-        self.lambda_dep = lambda_dep
-        self.lambda_hm = lambda_hm
-        self.lambda_joint = lambda_joint
+        self.lambda_dis = lambda_dis
+        self.lambda_flux = lambda_flux
+        self.lambda_kps = lambda_kps
         self.lambda_mask = lambda_mask
 
     def compute_loss(self, preds, targs, infos):
-        batch_size = infos['batch_size']
+        # target
+        targs_flux_map = targs['flux_map']  # (B, 20, res, res, 3)
+        targs_flux = targs_flux_map[:, :, :, :, :2]  # (B, 20, res, res, 2)
+        targs_mask = targs_flux_map[:, :, :, :, 2]  # (B, 20, res, res, 1)
+        targs_dis = targs['dis_map']  # (B, 20, res, res, 2)
+        targs_kps = targs['kp2d']  # (B, 21, 2)
 
-        # compute hm_loss anyway
-        loss = torch.Tensor([0]).cuda()
-        for pred_skeleton in preds[0]:
-            targs_flux = targs['flux_map']  # (B, 20, res, res, 3)
-            targs_dis = targs['dis_map']  # (B, 20, res, res, 2)
+        # prediction
+        pred_skeleton = preds[0][-1]  # (B, 20, res, res, 5)
+        pred_maps = torch.split(pred_skeleton, split_size_or_sections=[3, 2], dim=-1)
+        pred_flux = pred_maps[0][:, :, :, :2]  # (B, 20, res, res, 2)
+        pred_mask = pred_maps[0][:, :, :, 2]  # (B, 20, res, res, 1)
+        pred_dis = pred_maps[1]  # (B, 20, res, res, 2)
+        pred_kps = preds[1][-1]  # (B, 21, 2)
 
-            flux_dimension = targs_flux.shape[-1]
-            dis_dimension = targs_dis.shape[-1]
-            count_phalanges = 20
-            total_dimension = flux_dimension + dis_dimension
+        # compute loss
+        flux_loss = torch.sum(torch.sum(torch.abs(pred_flux - targs_flux), dim=-1) * pred_mask)
+        dis_loss = torch.sum(torch.sum(torch.abs(pred_dis - targs_dis), dim=-1) * pred_mask)
+        mask_loss = torch.sum(torch.abs(pred_mask - targs_mask))
+        kps_loss = torch.sum(torch.abs(pred_kps - targs_kps))
+        maps_loss = self.lambda_flux * flux_loss + self.lambda_dis * dis_loss + self.lambda_mask * mask_loss
+        loss = maps_loss + self.lambda_kps * kps_loss
 
-            pred_maps = pred_skeleton.reshape((batch_size, count_phalanges, -1, total_dimension))  # (B, 20, res*res, 5)
-            # split it into (B, 20, res*res, 3) and (B, 20, res*res, 2)
-            pred_maps = torch.split(pred_maps, split_size_or_sections=[3, 2], dim=-1)
-            pred_flux = pred_maps[0].split(split_size=1, dim=1)  # tuple of (B, 1, res*res, 3), len=20
-            pred_dis = pred_maps[1].split(split_size=1, dim=1)  # tuple of (B, 1, res*res, 2), len=20
-
-            targs_flux = targs_flux.reshape((batch_size, 20, -1, flux_dimension)).split(split_size=1, dim=1)
-            targs_dis = targs_dis.reshape((batch_size, 20, -1, dis_dimension)).split(split_size=1, dim=1)
-            for idx in range(count_phalanges):
-                pred_flux_i = pred_flux[idx].squeeze()  # (B, 1, 4096, 3)->(B, 4096, 3)
-                pred_dis_i = pred_dis[idx].squeeze()  # (B, 1, 4096, 2)->(B, 4096, 2)
-                targs_flux_i = targs_flux[idx].squeeze() # (B, 1, 4096, 3)->(B, 4096, 3)
-                targs_dis_i = targs_dis[idx].squeeze()  # (B, 1, 4096, 2)->(B, 4096, 2)
-                flux_loss = torch_f.mse_loss(pred_flux_i.float(), targs_flux_i.float())
-                targs_loss = torch_f.mse_loss(pred_dis_i.float(), targs_dis_i.float())
-                loss += 0.5 * flux_loss + 0.5 * targs_loss
         return loss
 
 
 def main(args):
-    best_acc = 0
+    """Main process"""
 
-    # Create the model
+    '''Set up the network'''
     print("\nCREATE NETWORK")
     model = NetStackedHourglass()
     model = model.to(device)
+    model = torch.nn.DataParallel(model)
+    print("\nUSING {} GPUs".format(torch.cuda.device_count()))
 
     criterion = SkeletonLoss()
 
@@ -106,20 +104,22 @@ def main(args):
         lr=args.learning_rate,
     )
 
+    scheduler = torch.optim.lr_scheduler.StepLR(
+        optimizer, args.lr_decay_step, gamma=args.gamma,
+        last_epoch=args.start_epoch
+    )
+
     print("\nCREATE DATASET...")
 
     # The argument needed to process the data
     hand_crop, hand_flip, use_wrist, BL, root_id, rotate, uv_sigma = True, True, True, 'small', 12, 180, 0.0
 
     '''Generate evaluation dataset'''
-    eval_dataset = []
     if args.process_evaluation_data:
         process_data.process_evaluation_data(args)
 
     eval_dataset = RHD_DataReader_With_File(mode="evaluation", path="data")
     print("Total test dataset size: {}".format(len(eval_dataset)))
-
-    print("\nLOAD DATASET...")
 
     val_loader = torch.utils.data.DataLoader(
         eval_dataset,
@@ -129,13 +129,15 @@ def main(args):
         pin_memory=True
     )
 
+    print("f")
+
     '''Generate training dataset'''
-    train_dataset = []
     if args.process_training_data:
+        print("?")
         process_data.process_training_data(args)
 
     train_dataset = RHD_DataReader_With_File(mode="training", path="data")
-    # print("Total train dataset size: {}".format(len(train_dataset)))
+    print("Total train dataset size: {}".format(len(train_dataset)))
 
     train_loader = torch.utils.data.DataLoader(
         train_dataset,
@@ -145,21 +147,20 @@ def main(args):
         pin_memory=True
     )
 
-    model = torch.nn.DataParallel(model)
-    print("\nUSING {} GPUs".format(torch.cuda.device_count()))
+    '''Set up the monitor'''
+    best_acc = 0
+    loss_log_dir = osp.join('tensorboard', 'loss')
+    loss_writer = SummaryWriter(log_dir=loss_log_dir)
+    val_log_dir = osp.join('tensorboard', 'val')
+    val_writer = SummaryWriter(log_dir=val_log_dir)
 
-    scheduler = torch.optim.lr_scheduler.StepLR(
-        optimizer, args.lr_decay_step, gamma=args.gamma,
-        last_epoch=args.start_epoch
-    )
-
-    # Start training
+    '''Start Training'''
     for epoch in range(args.start_epoch, args.epochs + 1):
         print('\nEpoch: %d' % (epoch + 1))
         for i in range(len(optimizer.param_groups)):
             print('group %d lr:' % i, optimizer.param_groups[i]['lr'])
 
-        train(
+        loss_avg = train(
             train_loader,
             model,
             criterion,
@@ -167,19 +168,27 @@ def main(args):
             args=args,
             epoch=epoch
         )
-    
-    # Validate the correctness of every 5 epochs
+
+        # Validate the correctness every 5 epochs
         val_indicator = best_acc
         if epoch % 5 == 0:
             val_indicator = validate(val_loader, model, criterion, args=args)
             print(f'Save skeleton_model.pkl after {epoch} epochs')
+            val_writer.add_scalar('Validation Indicator', val_indicator, epoch)
             torch.save(model, f'skeleton_model_after_{epoch}_epochs.pkl')
         if val_indicator > best_acc:
             best_acc = val_indicator
+
+        # Draw the loss curve and validation indicator curve
+        loss_writer.add_scalar('Loss', loss_avg, epoch)
+
         scheduler.step()
+
+    '''Save Model'''
     print("Save skeleton_model.pkl after total training")
     torch.save(model, 'skeleton_model.pkl')
     cprint('All Done', 'yellow', attrs=['bold'])
+
     return 0  # end of main
 
 
@@ -217,26 +226,39 @@ def one_forward_pass(sample, model, criterion, args, is_training=True):
         return results, {**targets, **infos}, loss
 
 
+# 24/07/2021 15:18: Use tensorboard to draw the loss curve
 def train(train_loader, model, criterion, optimizer, args, epoch):
+    """Train process"""
+    '''Set up configuration'''
     batch_time = AverageMeter()
     data_time = AverageMeter()
-    am_loss_hm = AverageMeter()
-
+    am_loss = AverageMeter()
     last = time.time()
-    
-    # switch to train mode
     model.train()
-
-    # Create the bar to record the progress
     bar = Bar('\033[31m Train \033[0m', max=len(train_loader))
+
+    if epoch == 0:
+        sample_idxs = []
+        for i in range(5):
+            sample_idx = random.randint(0, len(train_loader))
+            sample_idxs.append(sample_idx)
+        for i, sample in enumerate(train_loader):
+            for idx in sample_idxs:
+                if idx == i:
+                    image = sample["img_crop"][0]
+                    flux = sample["flux_map"][0]
+                    dis = sample["dis_map"][0]
+                    eval_utils.draw_maps(flux, dis, image, idx)
+
+    '''Start Training'''
     for i, sample in enumerate(train_loader):
         data_time.update(time.time() - last)
         results, targets, loss = one_forward_pass(
             sample, model, criterion, args, is_training=True
         )
 
-        # Update the skeleton loss after each sample
-        am_loss_hm.update(
+        '''Update the loss after each sample'''
+        am_loss.update(
             loss.item(), targets['batch_size']
         )
 
@@ -250,7 +272,7 @@ def train(train_loader, model, criterion, optimizer, args, epoch):
         last = time.time()
         bar.suffix = (
             '({batch}/{size}) '
-            'epoch: {epoch:}s | '
+            'epoch: {epoch:} | '
             'd: {data:.2f}s | '
             'b: {bt:.2f}s | '
             't: {total:}s | '
@@ -264,47 +286,14 @@ def train(train_loader, model, criterion, optimizer, args, epoch):
             bt=batch_time.avg,
             total=bar.elapsed_td,
             eta=bar.eta_td,
-            lossH=am_loss_hm.avg
+            lossH=am_loss.avg
         )
         bar.next()
     bar.finish()
+    return am_loss.avg
 
 
-def val_loss(preds, targs, args):
-    # compute the loss when validating
-    
-    batch_size = args.train_batch
-
-    # compute hm_loss anyway
-    loss = torch.Tensor([0]).cuda()
-    for pred_skeleton in preds[0]:
-        targs_flux = targs['flux_map']  # (B, 20, res, res, 3)
-        targs_dis = targs['dis_map']  # (B, 20, res, res, 2)
-
-        flux_dimension = targs_flux.shape[-1]
-        dis_dimension = targs_dis.shape[-1]
-        count_phalanges = 20
-        total_dimension = flux_dimension + dis_dimension
-
-        pred_maps = pred_skeleton.reshape((batch_size, count_phalanges, -1, total_dimension))  # (B, 20, res*res, 5)
-        # split it into (B, 20, res*res, 3) and (B, 20, res*res, 2)
-        pred_maps = torch.split(pred_maps, split_size_or_sections=[3, 2], dim=-1)
-        pred_flux = pred_maps[0].split(split_size=1, dim=1)  # tuple of (B, 1, res*res, 3), len=20
-        pred_dis = pred_maps[1].split(split_size=1, dim=1)  # tuple of (B, 1, res*res, 2), len=20
-
-        targs_flux = targs_flux.reshape((batch_size, 20, -1, flux_dimension)).split(split_size=1, dim=1)
-        targs_dis = targs_dis.reshape((batch_size, 20, -1, dis_dimension)).split(split_size=1, dim=1)
-        for idx in range(count_phalanges):
-            pred_flux_i = pred_flux[idx].squeeze()  # (B, 1, 4096, 3)->(B, 4096, 3)
-            pred_dis_i = pred_dis[idx].squeeze()  # (B, 1, 4096, 2)->(B, 4096, 2)
-            targs_flux_i = targs_flux[idx].squeeze() # (B, 1, 4096, 3)->(B, 4096, 3)
-            targs_dis_i = targs_dis[idx].squeeze()  # (B, 1, 4096, 2)->(B, 4096, 2)
-            flux_loss = torch_f.mse_loss(pred_flux_i, targs_flux_i)
-            targs_loss = torch_f.mse_loss(pred_dis_i, targs_dis_i)
-            loss += 0.5 * flux_loss + 0.5 * targs_loss
-    return loss
-
-
+# 24/07/2021 15:00: Maybe work now
 def validate(val_loader, model, criterion, args, stop=-1):
     # switch to evaluate mode
     am_accH = AverageMeter()
@@ -316,23 +305,10 @@ def validate(val_loader, model, criterion, args, stop=-1):
             results, targets, loss = one_forward_pass(
                 metas, model, criterion, args=args, is_training=False
             )
-            pred_skeleton = results[-1]
-            targs_flux = targets['flux_map']  # (B, 20, res, res, 3)
-            targs_dis = targets['dis_map']  # (B, 20, res, res, 2)
+            pred_kps = results[1][-1]  # (B, 21, 2)
+            targs_kps = targets["kp2d"]  # (B, 21, 2)
 
-            flux_dimension = targs_flux.shape[-1]
-            dis_dimension = targs_dis.shape[-1]
-            count_phalanges = 20
-            total_dimension = flux_dimension + dis_dimension
-
-            pred_maps = pred_skeleton.reshape((args.train_batch, count_phalanges, -1, total_dimension))  # (B, 20, res*res, 5)
-            # split it into (B, 20, res*res, 3) and (B, 20, res*res, 2)
-            pred_maps = torch.split(pred_maps, split_size_or_sections=[3, 2], dim=-1)
-            pred_flux = pred_maps[0].split(split_size=1, dim=1)  # tuple of (B, 1, res*res, 3), len=20
-            pred_dis = pred_maps[1].split(split_size=1, dim=1)  # tuple of (B, 1, res*res, 2), len=20
-            pred_kp = eval_utils.maps_to_kp(pred_flux, pred_dis)
-            targs_kp = eval_utils.maps_to_kp(targs_flux, targs_dis)
-            val = eval_utils.MeanEPE(pred_kp, targs_kp)
+            val = eval_utils.MeanEPE(pred_kps, targs_kps)
 
             bar.suffix = (
                 '({batch}/{size}) '

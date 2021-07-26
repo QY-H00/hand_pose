@@ -1,6 +1,9 @@
+import os.path as osp
 import torch
 import torch.functional as F
 import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
 
 
 def calc_dists(preds, target, normalize, mask):
@@ -215,7 +218,7 @@ def maps_to_kp(flux_map, dis_map, res=64):
         count = 5
         if np.sum(np.abs(mask)) != 0:
             kp[0] += np.sum(np.sum(np.abs(mask) * (
-                        direction * dis_map[4 * i, :, :, 0, None] + locs), axis=0), axis=0) / np.sum(np.abs(mask)) 
+                        direction * dis_map[4 * i, :, :, 0, None] + locs), axis=0), axis=0) / np.sum(np.abs(mask))
         # else:
         #     print("flag")
     kp[0] = kp[0] / count
@@ -242,14 +245,7 @@ def maps_to_kp(flux_map, dis_map, res=64):
                 # predicts the location of fingertips 1, 5, 9, 13, 17
                 kp[4 * i + 4 - j] = np.sum(np.sum(as_second_point_pred, axis=0), axis=0)
             # print("kp[", 4 * i + 4 - j, "] = ", kp[4 * i + 4 - j])
-    
-    for idx in range(20):
-        flux = flux_map[idx, :, :, :2]
-        for x in range(64):
-            for y in range(64):
-                length = flux[x, y, 0] * flux[x, y, 0] + flux[x, y, 1] * flux[x, y, 1]
-                # if length - 1 > 0.0001 and length - 0 > 0.0001:
-                #     print(idx, x, y, flux[x, y])
+
     return kp
 
 
@@ -303,7 +299,6 @@ def kp_to_maps(kp, res=64, sigma=1):
         second_point = kp[4 * j + 4]
         first_point = wrist_coor
         fill_maps(flux_map, dis_map, binary_skeleton, 4 * j, first_point, second_point, res, sigma)
-        
 
         # generates other 3 phalanges of each finger:
         # example: phalange 1 connects kp 4 and kp 3
@@ -312,9 +307,67 @@ def kp_to_maps(kp, res=64, sigma=1):
             first_point = kp[curr]
             second_point = kp[curr - 1]
             fill_maps(flux_map, dis_map, binary_skeleton, 4 * j + i + 1, first_point, second_point, res, sigma)
-    
-    
 
     return flux_map, dis_map
+
+
+# Here the idx is the batch number
+def draw_maps(flux, dis, img, idx):
+    direction = np.zeros([flux.shape[1], flux.shape[2]])
+    magnitude = np.zeros([flux.shape[1], flux.shape[2]])
+    dis_to_first = np.zeros([dis.shape[1], dis.shape[2]])
+    dis_to_second = np.zeros([dis.shape[1], dis.shape[2]])
+    for bone in range(flux.shape[0]):
+        for x in range(flux.shape[1]):
+            for y in range(flux.shape[2]):
+                if flux[bone, x, y, 0] != 0:
+                    dis_to_first[y, x] = dis[bone, x, y, 0]
+                    dis_to_second[y, x] = dis[bone, x, y, 1]
+                    direction[y, x] = flux[bone, x, y, 1] / flux[bone, x, y, 0]
+                    magnitude[y, x] = flux[bone, x, y, 2]
+                    if flux[bone, x, y, 0] > 0:
+                        direction[y, x] = np.degrees(np.arctan(direction[y, x]))
+                    if flux[bone, x, y, 0] < 0 < flux[bone, x, y, 1]:
+                        direction[y, x] = np.degrees(np.arctan(direction[y, x])) + 180
+                    if flux[bone, x, y, 1] < 0 and flux[bone, x, y, 0] < 0:
+                        direction[y, x] = np.degrees(np.arctan(direction[y, x])) - 180
+
+    # 作图阶段
+    fig = plt.figure()
+
+    ax_1 = fig.add_subplot(221)
+    plt.sca(ax_1)
+    ax_1.set_title("flux_map_direction")
+    sns.heatmap(data=direction,
+                cmap=sns.diverging_palette(250, 15, sep=12, n=20, center="dark"),  # 区分度显著色盘：sns.diverging_palette()使用
+                vmax=180,
+                vmin=-180
+                )
+
+    ax_2 = fig.add_subplot(222)
+    plt.sca(ax_2)
+    ax_2.set_title("flux_map_magnitude")
+    sns.heatmap(data=magnitude)
+
+    ax_3 = fig.add_subplot(223)
+    plt.sca(ax_3)
+    ax_3.set_title("dis_map_to_the_first_keypoint")
+    sns.heatmap(data=dis_to_first)
+
+    ax_4 = fig.add_subplot(224)
+    plt.sca(ax_4)
+    ax_4.set_title("dis_map_to_the_second_keypoint")
+    sns.heatmap(data=dis_to_second)
+
+    maps_save_path = osp.join("sample", f"maps_{idx}.jpg")
+    plt.savefig(maps_save_path)
+    plt.close()
+
+    img = img.reshape((256, 256, 3))
+    plt.imshow(img)  # 显示图片
+    plt.axis('off')  # 不显示坐标轴
+    img_save_path = osp.join("sample", f"maps_{idx}.jpg")
+    plt.savefig(img_save_path)
+    plt.close()
 
 
