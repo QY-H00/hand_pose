@@ -14,7 +14,7 @@ def process_evaluation_data(args):
     for i in range(len(eval_dataset)):
         print(i, "validation data finished")
         evaluation_data[i] = eval_dataset.__getitem__(i)
-    evaluation_data_file = open(f'data/processed_data_evaluation.pickle', 'wb')
+    evaluation_data_file = open(f'data_v2.0/processed_data_evaluation.pickle', 'wb')
     pickle.dump(evaluation_data, evaluation_data_file, protocol=pickle.HIGHEST_PROTOCOL)
     evaluation_data_file.close()
 
@@ -41,12 +41,11 @@ def process_training_data(args):
         pos = i % interval
         training_data[slot][pos] = train_dataset.__getitem__(i)
         print("slot:", slot, "pos:", pos, f"training data {i} finished")
-
-    for i in range(21):
-        training_data_file[i] = open(f'data/processed_data_training_{i}.pickle', 'wb')
-        pickle.dump(training_data[i], training_data_file[i], protocol=pickle.HIGHEST_PROTOCOL)
-        training_data_file[i].close()
-
+        if pos == interval - 1:
+            training_data_file[slot] = open(f'data_v2.0/processed_data_training_{slot}.pickle', 'wb')
+            pickle.dump(training_data[slot], training_data_file[slot], protocol=pickle.HIGHEST_PROTOCOL)
+            training_data_file[i].close()
+            print(f"slot {slot} data finished")
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(

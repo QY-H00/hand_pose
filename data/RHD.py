@@ -16,6 +16,7 @@ import torchvision.transforms.functional as TF
 from data import eval_utils
 
 __all__ = ["RHD_DataReader", "RHD_DataReader_With_File"]
+training_volume = 21
 
 
 def get_hand_flag(hand_parts):
@@ -61,9 +62,9 @@ class RHD_DataReader_With_File(Dataset):
             fi.close()
 
         if mode == 'training':
-            self.anno_all = [None] * 21
-            path_to_anno = [None] * 21
-            for i in range(21):
+            self.anno_all = [None] * training_volume
+            path_to_anno = [None] * training_volume
+            for i in range(training_volume):
                 path_to_anno[i] = f'processed_data_{mode}_{i}.pickle' if path is None \
                     else osp.join(path, f'processed_data_{mode}_{i}.pickle')
                 fi = open(path_to_anno[i], 'rb')
@@ -75,7 +76,7 @@ class RHD_DataReader_With_File(Dataset):
             return int(len(self.anno_all_evaluation))
         else:
             res = 0
-            for i in range(21):
+            for i in range(training_volume):
                 hi = self.anno_all[i]
                 res += int(len(hi))
             return res
@@ -84,7 +85,7 @@ class RHD_DataReader_With_File(Dataset):
         if self.mode == 'evaluation':
             return self.anno_all_evaluation[idx]
         else:
-            interval = self.__len__() // 20
+            interval = self.__len__() // (training_volume - 1)
             slot = idx // interval
             pos = idx % interval
             return self.anno_all[slot][pos]
@@ -346,9 +347,27 @@ class RHD_DataReader(Dataset):
             if kp[1] > self.hm_res:
                 kp[1] = self.hm_res - 1
 
-        # print(self.kp_uv21_crop)
-        self.flux_map, self.dis_map = eval_utils.kp_to_maps(hm_uv_crop, res=self.hm_res)
-        # print("finsh one sample")
+        # # Version 1.0
+        # self.flux_map, self.dis_map = eval_utils.kp_to_maps(hm_uv_crop, res=self.hm_res)
+
+        # sample = {'img_crop': self.img_crop,
+        #           'mask_crop': self.mask_crop,
+        #           'crop_scale': self.crop_scale,
+        #           'uv_crop': self.kp_uv21_crop,  # dimension: [21, 2]
+        #           'vis21': self.kp_vis21,
+        #           'xyz': self.kp_xyz_rotate,
+        #           'xyz_norm': self.kp_xyz21_norm,
+        #           'norm_scale': self.kp_norm_scale,
+        #           'K': self.cam_mat_crop,
+        #           'hm': hm,
+        #           'hm_veil': hm_veil,
+        #           "flux_map": self.flux_map,
+        #           "dis_map": self.dis_map
+        #           }
+
+        # Version 2.0
+        self.front_vec, self.front_dis, self.back_vec, self.back_dis, self.binary_skeleton, self.weights \
+            = eval_utils.kp_to_maps_2(hm_uv_crop, res=self.hm_res)
 
         sample = {'img_crop': self.img_crop,
                   'mask_crop': self.mask_crop,
@@ -359,10 +378,12 @@ class RHD_DataReader(Dataset):
                   'xyz_norm': self.kp_xyz21_norm,
                   'norm_scale': self.kp_norm_scale,
                   'K': self.cam_mat_crop,
-                  'hm': hm,
-                  'hm_veil': hm_veil,
-                  "flux_map": self.flux_map,
-                  "dis_map": self.dis_map
+                  "front_vec": self.front_vec,
+                  "front_dis": self.front_dis,
+                  "back_vec": self.back_vec,
+                  "back_dis": self.back_dis,
+                  "skeleton": self.binary_skeleton,
+                  "weit_map": self.weights
                   }
 
         return sample
