@@ -23,7 +23,7 @@ from data.eval_utils import AverageMeter
 from data.RHD import RHD_DataReader_With_File
 from models.hourglass import NetStackedHourglass
 from decoder.softargmax_decoder import SoftargmaxDecoder
-from loss.heatmap_loss import HeatmapLoss
+from loss.keypoint_loss import KeypointLoss
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -39,7 +39,7 @@ def main(args):
     model = nn.Sequential(encoder, decoder)
     model = model.to(device)
 
-    criterion = HeatmapLoss()
+    criterion = KeypointLoss()
 
     optimizer = torch.optim.Adam(
         [
@@ -146,7 +146,8 @@ def one_forward_pass(sample, model, criterion, args, is_training=True):
     hm_veil = sample['hm_veil'].to(device, non_blocking=True)
     infos = {
         'hm_veil': hm_veil,
-        'batch_size': args.train_batch
+        'batch_size': args.train_batch,
+        'vis': vis
     }
 
     targets = {

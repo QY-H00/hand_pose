@@ -20,4 +20,4 @@ class SoftargmaxDecoder(nn.Module):
         return coord_out_final.view(bs, 21, 2)
 
     def forward(self, x):
-        return self.regress25d(x, self.beta)
+        return self.regress25d(x[0][-1], self.beta)

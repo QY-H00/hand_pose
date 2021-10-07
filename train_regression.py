@@ -1,6 +1,6 @@
 import os
 
-os.environ["CUDA_VISIBLE_DEVICES"] = '6'
+os.environ["CUDA_VISIBLE_DEVICES"] = '5'
 
 import os.path as osp
 
@@ -209,7 +209,6 @@ def train(train_loader, model, criterion, optimizer, args):
 def validate(val_loader, model, criterion, args, stop=-1):
     # switch to evaluate mode
     am_accH = AverageMeter()
-
     model.eval()
     bar = Bar('\033[33m Eval  \033[0m', max=len(val_loader))
     with torch.no_grad():
