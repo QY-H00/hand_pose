@@ -47,6 +47,10 @@ def coord_normalize(coord, root_id, BL):
     return coord_norm, bone_length
 
 
+def custom_collate(dict):
+    return RHD_DataReader_With_File(dict)
+
+
 class RHD_DataReader_With_File(Dataset):
 
     def __init__(self, path=None, mode=None):
@@ -60,35 +64,25 @@ class RHD_DataReader_With_File(Dataset):
             fi = open(path_to_anno, 'rb')
             self.anno_all_evaluation = pickle.load(fi)
             fi.close()
+            self.length = int(len(self.anno_all_evaluation))
 
         if mode == 'training':
-            self.anno_all = [None] * training_volume
-            path_to_anno = [None] * training_volume
-            for i in range(training_volume):
-                path_to_anno[i] = f'processed_data_{mode}_{i}.pickle' if path is None \
-                    else osp.join(path, f'processed_data_{mode}_{i}.pickle')
-                fi = open(path_to_anno[i], 'rb')
-                self.anno_all[i] = pickle.load(fi)
-                fi.close()
+            self.length = 41258
 
     def __len__(self):
-        if self.mode == 'evaluation':
-            return int(len(self.anno_all_evaluation))
-        else:
-            res = 0
-            for i in range(training_volume):
-                hi = self.anno_all[i]
-                res += int(len(hi))
-            return res
+        return self.length
 
     def __getitem__(self, idx):
         if self.mode == 'evaluation':
             return self.anno_all_evaluation[idx]
         else:
-            interval = self.__len__() // (training_volume - 1)
-            slot = idx // interval
-            pos = idx % interval
-            return self.anno_all[slot][pos]
+            path = f'processed_training_data/processed_data_{self.mode}_{idx}.pickle' if self.path is None \
+               else osp.join(self.path, f'processed_training_data/processed_data_{self.mode}_{idx}.pickle')
+            fi = open(path, 'rb')
+            sample = pickle.load(fi)
+            fi.close()
+            del sample['bone_vis']  # Need to re-process the data
+            return sample
 
 
 class RHD_DataReader(Dataset):
@@ -318,6 +312,9 @@ class RHD_DataReader(Dataset):
                 hm_veil[i] *= aval
                 kps.append(kp)
 
+            self.hm = hm
+            self.hm_veil = hm_veil
+
         if self.right_hand_flip:
             if self.hand_side == 0:
                 # flip left hands to right hands
@@ -368,6 +365,26 @@ class RHD_DataReader(Dataset):
         # Version 2.0
         self.front_vec, self.front_dis, self.back_vec, self.back_dis, self.binary_skeleton, self.weights \
             = eval_utils.kp_to_maps_2(hm_uv_crop, res=self.hm_res)
+        self.bone_vis = eval_utils.process_generating_bone_vis(self.kp_vis21)
+
+        # print('img_crop:', type(self.img_crop))
+        # print('mask_crop:', type(self.mask_crop))
+        # print('crop_scale:', type(self.crop_scale))
+        # print('uv_crop:', type(self.kp_uv21_crop))
+        # print("vis21:", type(self.kp_vis21))
+        # print('xyz:', type(self.kp_xyz_rotate))
+        # print('xyz_norm:', type(self.kp_xyz21_norm))
+        # print('norm_scale:', type(self.kp_norm_scale))
+        # print('K:', type(self.cam_mat_crop))
+        # print("front_vec:", type(self.front_vec))
+        # print("front_dis:", type(self.front_dis))
+        # print("back_vec:", type(self.back_vec))
+        # print("back_dis:", type(self.back_dis))
+        # print("skeleton:", type(self.binary_skeleton))
+        # print("weit_map:", type(self.weights))
+        # print("bone_vis:", type(self.bone_vis))
+        # print('hm:', type(self.hm))
+        # print('hm_veil:', type(self.hm_veil))
 
         sample = {'img_crop': self.img_crop,
                   'mask_crop': self.mask_crop,
@@ -383,7 +400,10 @@ class RHD_DataReader(Dataset):
                   "back_vec": self.back_vec,
                   "back_dis": self.back_dis,
                   "skeleton": self.binary_skeleton,
-                  "weit_map": self.weights
+                  "weit_map": self.weights,
+                  "bone_vis": self.bone_vis,
+                  'hm': self.hm,
+                  'hm_veil': self.hm_veil
                   }
 
         return sample

@@ -19,6 +19,36 @@ def process_evaluation_data(args):
     evaluation_data_file.close()
 
 
+# def process_training_data(args):
+#     hand_crop, hand_flip, use_wrist, BL, root_id, rotate, uv_sigma = True, True, True, 'small', 12, 180, 0.0
+#     train_dataset = RHD_DataReader(path=args.data_root, mode='training', hand_crop=hand_crop,
+#                                    use_wrist_coord=use_wrist,
+#                                    sigma=5,
+#                                    data_aug=False, uv_sigma=uv_sigma, rotate=rotate, BL=BL, root_id=root_id,
+#                                    right_hand_flip=hand_flip, crop_size_input=256)
+#     print("Total train dataset size: {}".format(len(train_dataset)))
+#     interval = len(train_dataset) // 20
+#     left = len(train_dataset) % 20
+#     print("interval", interval, "left", left)
+#     training_data = list(range(interval))
+#     prev_slot = 0
+#     for i in range(len(train_dataset)):
+#         slot = i // interval
+#         if prev_slot != slot:
+#             if slot < 20:
+#                 training_data = list(range(interval))
+#             else:
+#                 training_data = list(range(left))
+#         pos = i % interval
+#         training_data[pos] = train_dataset.__getitem__(i)
+#         print("slot:", slot, "pos:", pos, f"training data {i} finished")
+#         prev_slot = slot
+#         if pos == interval - 1 or (pos == left - 1 and slot == 20):
+#             training_data_file = open(f'data_v2.0/processed_data_training_{slot}.pickle', 'wb')
+#             pickle.dump(training_data, training_data_file, protocol=pickle.HIGHEST_PROTOCOL)
+#             training_data_file.close()
+#             print(f"slot {slot} data finished")
+
 def process_training_data(args):
     hand_crop, hand_flip, use_wrist, BL, root_id, rotate, uv_sigma = True, True, True, 'small', 12, 180, 0.0
     train_dataset = RHD_DataReader(path=args.data_root, mode='training', hand_crop=hand_crop,
@@ -27,25 +57,13 @@ def process_training_data(args):
                                    data_aug=False, uv_sigma=uv_sigma, rotate=rotate, BL=BL, root_id=root_id,
                                    right_hand_flip=hand_flip, crop_size_input=256)
     print("Total train dataset size: {}".format(len(train_dataset)))
-    training_data = list(range(21))
-    training_data_file = list(range(21))
-    interval = len(train_dataset) // 20
-    for i in range(20):
-        training_data[i] = list(range(interval))
-    left = len(train_dataset) % 20
-    print("interval", interval, "left", left)
-    training_data[20] = list(range(left))
-
     for i in range(len(train_dataset)):
-        slot = i // interval
-        pos = i % interval
-        training_data[slot][pos] = train_dataset.__getitem__(i)
-        print("slot:", slot, "pos:", pos, f"training data {i} finished")
-        if pos == interval - 1:
-            training_data_file[slot] = open(f'data_v2.0/processed_data_training_{slot}.pickle', 'wb')
-            pickle.dump(training_data[slot], training_data_file[slot], protocol=pickle.HIGHEST_PROTOCOL)
-            training_data_file[i].close()
-            print(f"slot {slot} data finished")
+        training_data_i = train_dataset.__getitem__(i)
+        data_i_file = open(f'data_v2.0/processed_training_data/processed_data_training_{i}.pickle', 'wb')
+        pickle.dump(training_data_i, data_i_file, protocol=pickle.HIGHEST_PROTOCOL)
+        data_i_file.close()
+        print(f"training data {i} finished")
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(

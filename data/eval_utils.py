@@ -6,6 +6,36 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import random
 import cv2
+from kornia.geometry.dsnt import spatial_softmax_2d, spatial_softargmax_2d
+
+
+class AverageMeter(object):
+    """Computes and stores the average and current value"""
+
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self.val = 0
+        self.avg = 0
+        self.sum = 0
+        self.count = 0
+
+    def update(self, val, n=1):
+        self.val = val
+        self.sum += val * n
+        self.count += n
+        self.avg = self.sum / self.count
+
+def regress25d(heatmaps, beta):
+    # Figure out what is beta
+    bs = heatmaps.shape[0]
+    betas = beta.clone().view(1, 21, 1).repeat(bs, 1, 1)
+    uv_heatmaps = spatial_softmax_2d(heatmaps, betas)
+    coord_out = spatial_softargmax_2d(uv_heatmaps, normalized_coordinates=False)
+    coord_out_final = coord_out.clone()
+
+    return coord_out_final.view(bs, 21, 2)
 
 
 def MeanEPE(x, y):
@@ -29,8 +59,8 @@ def is_on_skeleton(idx, res, direction, length, first_point, sigma=1):
                 pred[x, y] = np.sum(np.abs(np.array([x, y]) - first_point)) <= sigma
                 if pred[x, y]:
                     # Check that any part of the gaussian is in-bounds
-                    ul = [int(x - 3 * sigma), int(y - 3 * sigma)]
-                    br = [int(x + 3 * sigma + 1), int(y + 3 * sigma + 1)]
+                    ul = [int(x - 2 * sigma), int(y - 2 * sigma)]
+                    br = [int(x + 2 * sigma + 1), int(y + 2 * sigma + 1)]
                     if (
                             ul[0] >= res
                             or ul[1] >= res
@@ -40,7 +70,7 @@ def is_on_skeleton(idx, res, direction, length, first_point, sigma=1):
                         # If not, just return the image as is
                         continue
                     # Generate gaussian
-                    size = 6 * sigma + 1
+                    size = 4 * sigma + 1
                     x_c = np.arange(0, size, 1, float)
                     y_c = x_c[:, np.newaxis]
                     x0 = y0 = size // 2
@@ -69,10 +99,11 @@ def is_on_skeleton(idx, res, direction, length, first_point, sigma=1):
             pred_1 = 0 <= np.dot(direction, np.array([x, y]) - first_point) and np.dot(direction, np.array(
                 [x, y]) - first_point) <= length
             pred_2 = np.abs(np.dot(vertical_direction, np.array([x, y]) - first_point)) <= sigma
+            # pred[x, y] = pred_1 and pred_2
             if pred_1 and pred_2:
                 # Check that any part of the gaussian is in-bounds
-                ul = [int(x - 3 * sigma), int(y - 3 * sigma)]
-                br = [int(x + 3 * sigma + 1), int(y + 3 * sigma + 1)]
+                ul = [int(x - 2 * sigma), int(y - 2 * sigma)]
+                br = [int(x + 2 * sigma + 1), int(y + 2 * sigma + 1)]
                 if (
                         ul[0] >= res
                         or ul[1] >= res
@@ -82,7 +113,7 @@ def is_on_skeleton(idx, res, direction, length, first_point, sigma=1):
                     # If not, just return the image as is
                     continue
                 # Generate gaussian
-                size = 6 * sigma + 1
+                size = 4 * sigma + 1
                 x_c = np.arange(0, size, 1, float)
                 y_c = x_c[:, np.newaxis]
                 x0 = y0 = size // 2
@@ -394,12 +425,12 @@ def fill_maps_2(front_vec_map, front_dis_map, back_vec_map, back_dis_map, ske_ma
     for x in range(res):
         for y in range(res):
             if ske_mask[phalanx_idx, x, y, 0]:
-                direction, length = normalize(second_point - np.array([x, y]))
+                sup = second_point - np.array([x, y])
                 front_vec_map[phalanx_idx, x, y, :] = direction
-                front_dis_map[phalanx_idx, x, y, 0] = length / res
-                direction, length = normalize(first_point - np.array([x, y]))
-                back_vec_map[phalanx_idx, x, y, :] = direction
-                back_dis_map[phalanx_idx, x, y, 0] = length / res
+                front_dis_map[phalanx_idx, x, y, 0] = np.dot(sup, direction) / res
+                sup = first_point - np.array([x, y])
+                back_vec_map[phalanx_idx, x, y, :] = -direction
+                back_dis_map[phalanx_idx, x, y, 0] = -np.dot(sup, direction) / res
 
             else:
                 front_vec_map[phalanx_idx, x, y, :] = 0
@@ -440,7 +471,9 @@ def kp_to_maps_2(kp, res=64, sigma=1):
 
 
 # Here the idx is the batch number
-def draw_maps_2(front_vec_map, front_dis_map, back_vec_map, back_dis_map, ske_mask_map, idx, mode):
+def draw_maps_2(front_vec_map, front_dis_map, back_vec_map, back_dis_map, ske_mask_map, weit_map, idx, mode):
+    front_vec_map = front_vec_map * weit_map
+    back_vec_map = back_vec_map * weit_map
     front_vec = np.zeros([front_vec_map.shape[1], front_vec_map.shape[2]])
     front_dis = np.zeros([front_dis_map.shape[1], front_dis_map.shape[2]])
     back_vec = np.zeros([back_vec_map.shape[1], back_vec_map.shape[2]])
@@ -451,7 +484,10 @@ def draw_maps_2(front_vec_map, front_dis_map, back_vec_map, back_dis_map, ske_ma
             for y in range(front_vec_map.shape[2]):
                 if ske_mask_map[bone, x, y, 0] > 0:
                     ske_mask[y, x] = np.maximum(ske_mask[y, x], ske_mask_map[bone, x, y, 0])
-                if front_vec_map[bone, x, y, 1] != 0 and back_vec_map[bone, x, y, 1] != 0:
+                if front_vec_map[bone, x, y, 1] != 0 \
+                        and np.abs(front_vec_map[bone, x, y, 1] + front_vec_map[bone, x, y, 0]) > np.mean(np.abs(front_vec_map)) \
+                        and back_vec_map[bone, x, y, 1] != 0 \
+                        and np.abs(back_vec_map[bone, x, y, 1] + back_vec_map[bone, x, y, 0]) > np.mean(np.abs(back_vec_map)):
                     back_vec[y, x] = back_vec_map[bone, x, y, 0] / back_vec_map[bone, x, y, 1]
                     back_dis[y, x] = back_dis_map[bone, x, y, 0]
                     front_vec[y, x] = front_vec_map[bone, x, y, 0] / front_vec_map[bone, x, y, 1]
@@ -534,6 +570,8 @@ def draw_maps_2(front_vec_map, front_dis_map, back_vec_map, back_dis_map, ske_ma
 # Here the idx is the batch number
 def draw_maps_with_one_bone_2(front_vec_map, front_dis_map, back_vec_map, back_dis_map, ske_mask_map, weit_map, idx, mode):
     for bone in range(front_vec_map.shape[0]):
+        front_vec_map = front_vec_map * weit_map
+        back_vec_map = back_vec_map * weit_map
         front_vec = np.zeros([front_vec_map.shape[1], front_vec_map.shape[2]])
         front_dis = np.zeros([front_dis_map.shape[1], front_dis_map.shape[2]])
         back_vec = np.zeros([back_vec_map.shape[1], back_vec_map.shape[2]])
@@ -544,7 +582,10 @@ def draw_maps_with_one_bone_2(front_vec_map, front_dis_map, back_vec_map, back_d
             for y in range(front_vec_map.shape[2]):
                 ske_mask[y, x] = ske_mask_map[bone, x, y, 0]
                 weit[y, x] = weit_map[bone, x, y, 0]
-                if front_vec_map[bone, x, y, 1] != 0 and front_vec_map[bone, x, y, 1] + front_vec_map[bone, x, y, 0] > 1e-5 and back_vec_map[bone, x, y, 1] != 0 and back_vec_map[bone, x, y, 1] + back_vec_map[bone, x, y, 0] > 1e-5:
+                if front_vec_map[bone, x, y, 1] != 0 \
+                        and np.abs(front_vec_map[bone, x, y, 1] + front_vec_map[bone, x, y, 0]) > np.mean(np.abs(front_vec_map)) \
+                        and back_vec_map[bone, x, y, 1] != 0 \
+                        and np.abs(back_vec_map[bone, x, y, 1] + back_vec_map[bone, x, y, 0]) > np.mean(np.abs(back_vec_map)):
                     back_vec[y, x] = back_vec_map[bone, x, y, 0] / back_vec_map[bone, x, y, 1]
                     back_dis[y, x] = back_dis_map[bone, x, y, 0]
                     front_vec[y, x] = front_vec_map[bone, x, y, 0] / front_vec_map[bone, x, y, 1]
@@ -760,29 +801,15 @@ def get_heatmap_pred(heatmaps):
     return preds
 
 
-def accuracy_heatmap(output, target, mask, thr=0.5):
+def accuracy_heatmap(output, target, vis, thr=0.5):
     """ Calculate accuracy according to PCK, but uses ground truth heatmap rather than x,y locations
         First to be returned is average accuracy across 'idxs', Second is individual accuracies
     """
     preds = get_heatmap_pred(output).float()  # (B, njoint, 2)
     gts = get_heatmap_pred(target).float()
-    norm = torch.ones(preds.size(0)) * output.size(3) / 10.0  # (B, ), all 6.4:(1/10 of heatmap side)
-    dists = calc_dists(preds, gts, norm, mask)  # (njoint, B)
+    val = MeanEPE(preds * vis, gts * vis)
 
-    acc = torch.zeros(mask.size(1))
-    avg_acc = 0
-    cnt = 0
-
-    for i in range(mask.size(1)):  # njoint
-        acc[i] = dist_acc(dists[i], thr)
-        if acc[i] >= 0:
-            avg_acc += acc[i]
-            cnt += 1
-
-    if cnt != 0:
-        avg_acc /= cnt
-
-    return avg_acc, acc
+    return val
 
 
 def get_measures(self, val_min, val_max, steps):
@@ -835,3 +862,28 @@ def get_measures(self, val_min, val_max, steps):
         pck_curve_all,
         thresholds,
     )
+
+
+def generate_bone_vis(vis, device):
+    # vis shape (B, 21, 1)
+    batch_size = vis.shape[0]
+    bone_vis = torch.zeros((batch_size, 20)).to(device)
+    for finger_idx in range(5):
+        bone_vis[:, 0 + finger_idx * 4] = vis[:, 0, 0] * vis[:, 4 + finger_idx * 4, 0]
+        bone_vis[:, 1 + finger_idx * 4] = vis[:, 4 + finger_idx * 4, 0] * vis[:, 3 + finger_idx * 4, 0]
+        bone_vis[:, 2 + finger_idx * 4] = vis[:, 3 + finger_idx * 4, 0] * vis[:, 2 + finger_idx * 4, 0]
+        bone_vis[:, 3 + finger_idx * 4] = vis[:, 2 + finger_idx * 4, 0] * vis[:, 1 + finger_idx * 4, 0]
+    # bone_vis shape (B, 20, 1)
+    return bone_vis[:, :, None]
+
+
+def process_generating_bone_vis(vis):
+    bone_vis = np.zeros(20)
+    for finger_idx in range(5):
+        bone_vis[0 + finger_idx * 4] = vis[0] * vis[4 + finger_idx * 4]
+        bone_vis[1 + finger_idx * 4] = vis[4 + finger_idx * 4] * vis[3 + finger_idx * 4]
+        bone_vis[2 + finger_idx * 4] = vis[3 + finger_idx * 4] * vis[2 + finger_idx * 4]
+        bone_vis[3 + finger_idx * 4] = vis[2 + finger_idx * 4] * vis[1 + finger_idx * 4]
+    return bone_vis
+
+
