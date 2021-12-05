@@ -1,6 +1,6 @@
 import os
 
-os.environ["CUDA_VISIBLE_DEVICES"] = '5'
+os.environ["CUDA_VISIBLE_DEVICES"] = '7'
 
 import os.path as osp
 
@@ -20,9 +20,11 @@ from tensorboardX import SummaryWriter
 import data.eval_utils as eval_utils
 from data.eval_utils import AverageMeter
 from data.RHD import RHD_DataReader_With_File
+from data.rhd_dataset import RHDDateset
 from network.resnet import ResNet
 from decoder.regression_decoder import RegressionDecoder
 from loss.keypoint_loss import KeypointLoss
+from pose_resnet_baseline import pose_resnet101_coordinate
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -30,12 +32,12 @@ cudnn.benchmark = True
 
 
 def main(args):
-    best_acc = 0
-
     print("\nCREATE NETWORK")
-    encoder = ResNet(pretrained=True)
-    decoder = RegressionDecoder()
-    model = nn.Sequential(encoder, decoder)
+    # encoder = ResNet(pretrained=True)
+    # decoder = RegressionDecoder()
+    # model = nn.Sequential(encoder, decoder)
+    # model = pose_resnet101_coordinate()
+    model = ResNet(pretrained=True)
     model = model.to(device)
 
     criterion = KeypointLoss()
@@ -51,18 +53,10 @@ def main(args):
     )
 
     print("\nCREATE DATASET...")
-    hand_crop, hand_flip, use_wrist, BL, root_id, rotate, uv_sigma = True, True, True, 'small', 12, 180, 0.0
-    # train_dataset = RHD_DataReader(path=args.data_root, mode='training', hand_crop=hand_crop, use_wrist_coord=use_wrist,
-    #                                sigma=5,
-    #                                data_aug=False, uv_sigma=uv_sigma, rotate=rotate, BL=BL, root_id=root_id,
-    #                                right_hand_flip=hand_flip, crop_size_input=256)
-    #
-    # val_dataset = RHD_DataReader(path=args.data_root, mode='evaluation', hand_crop=hand_crop, use_wrist_coord=use_wrist,
-    #                              sigma=5,
-    #                              data_aug=False, uv_sigma=uv_sigma, rotate=rotate, BL=BL, root_id=root_id,
-    #                              right_hand_flip=hand_flip, crop_size_input=256)
-    train_dataset = RHD_DataReader_With_File(mode="training", path="data_v2.0")
-    val_dataset = RHD_DataReader_With_File(mode="evaluation", path="data_v2.0")
+    # train_dataset = RHD_DataReader_With_File(mode="training", path="data_v2.0")
+    # val_dataset = RHD_DataReader_With_File(mode="evaluation", path="data_v2.0")
+    train_dataset = RHDDateset('RHD_published_v2/', 'training', input_size=256, output_full=True, aug=True)
+    val_dataset = RHDDateset('RHD_published_v2/', 'evaluation', input_size=256, output_full=True, aug=False)
 
     print("Total train dataset size: {}".format(len(train_dataset)))
     print("Total test dataset size: {}".format(len(val_dataset)))
@@ -71,7 +65,7 @@ def main(args):
     train_loader = torch.utils.data.DataLoader(
         train_dataset,
         batch_size=args.train_batch,
-        shuffle=False,
+        shuffle=True,
         num_workers=args.workers,
         pin_memory=True
     )
@@ -91,14 +85,16 @@ def main(args):
         last_epoch=args.start_epoch
     )
 
-    best_acc = 0
     loss_log_dir = osp.join('tensorboard', f'regress_loss_{datetime.now().strftime("%Y%m%d_%H%M")}')
     loss_writer = SummaryWriter(log_dir=loss_log_dir)
     error_log_dir = osp.join('tensorboard', f'regress_error_{datetime.now().strftime("%Y%m%d_%H%M")}')
     error_writer = SummaryWriter(log_dir=error_log_dir)
 
+    # 从第1次训练到第90次训练：
     for epoch in range(args.start_epoch, args.epochs + 1):
+        # 不用看
         print('\nEpoch: %d' % (epoch + 1))
+        # 不用看
         for i in range(len(optimizer.param_groups)):
             print('group %d lr:' % i, optimizer.param_groups[i]['lr'])
         #############  train for on epoch  ###############
@@ -110,22 +106,19 @@ def main(args):
             args=args,
         )
         ##################################################
-        val_indicator = best_acc
         if epoch % 5 == 4:
             train_indicator = validate(train_loader, model, criterion, args=args)
             val_indicator = validate(val_loader, model, criterion, args=args)
             print(f'Save skeleton_model.pkl after {epoch + 1} epochs')
             error_writer.add_scalar('Validation Indicator', val_indicator, epoch)
             error_writer.add_scalar('Training Indicator', train_indicator, epoch)
-            torch.save(model, f'trained_model_regression/skeleton_model_after_{epoch + 1}_epochs.pkl')
-        if val_indicator > best_acc:
-            best_acc = val_indicator
+            torch.save(model, f'trained_model_regression/model_after_{epoch + 1}_epochs.pkl')
         scheduler.step()
 
         # Draw the loss curve and validation indicator curve
         loss_writer.add_scalar('Loss', loss_avg.avg, epoch)
     print("\nSave model as hourglass_model.pkl...")
-    torch.save(model, 'trained_model_regression/hourglass_model.pkl')
+    torch.save(model, 'trained_model_regression/model.pkl')
     cprint('All Done', 'yellow', attrs=['bold'])
     return 0  # end of main
 
@@ -134,7 +127,7 @@ def one_forward_pass(sample, model, criterion, args, is_training=True):
     """ prepare target """
     img = sample['img_crop'].to(device, non_blocking=True)
     kp2d = sample['uv_crop'].to(device, non_blocking=True)
-    vis = sample['vis21'].to(device, non_blocking=True)
+    vis = sample['vis21'].to(device, non_blocking=True)  # [B, 21, 1] 如果第i个关键点在Batch中的第k张图片中能看到，则vis[k, i] = 1 else 0
 
     ''' heatmap generation '''
     # need to modify
@@ -175,8 +168,11 @@ def train(train_loader, model, criterion, optimizer, args):
     # switch to train mode
     model.train()
     bar = Bar('\033[31m Train \033[0m', max=len(train_loader))
+    # 如果我们有3200个样本, 假如batch_size=32, len(train_loader) = 3200 / 32 = 100
     for i, sample in enumerate(train_loader):
+        # 对一个batch进行训练
         data_time.update(time.time() - last)
+
         results, targets, loss = one_forward_pass(
             sample, model, criterion, args, is_training=True
         )
@@ -220,7 +216,7 @@ def validate(val_loader, model, criterion, args, stop=-1):
             targ_kps = targets['kp2d']
             vis = targets['vis'][:, :, None]
             pred_kps = pred_kps.reshape(pred_kps.shape[0], 21, 2)
-            val = eval_utils.MeanEPE(pred_kps * vis, targ_kps * vis)
+            val = eval_utils.MeanEPE(pred_kps * vis * 4, targ_kps * vis)
             bar.suffix = (
                 '({batch}/{size}) '
                 'accH: {accH:.4f} | '
@@ -332,7 +328,7 @@ if __name__ == '__main__':
 
     parser.add_argument(
         '-lr', '--learning_rate',
-        default=1.0e-4,
+        default=1.0e-5,
         type=float,
         metavar='LR',
         help='initial learning rate'

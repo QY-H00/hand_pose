@@ -740,6 +740,7 @@ def dist_acc(dist, thr=0.5):
 
 def gen_heatmap(img, pt, sigma):
     """generate heatmap based on pt coord.
+
     :param img: original heatmap, zeros
     :type img: np (H,W) float32
     :param pt: keypoint coord.
@@ -749,6 +750,7 @@ def gen_heatmap(img, pt, sigma):
     :return
     - generated heatmap, np (H, W) each pixel values id a probability
     - flag 0 or 1: indicate wheather this heatmap is valid(1)
+
     """
 
     pt = pt.astype(np.int32)
@@ -771,7 +773,7 @@ def gen_heatmap(img, pt, sigma):
     x0 = y0 = size // 2
     g = np.exp(- ((x - x0) ** 2 + (y - y0) ** 2) / (2 * sigma ** 2))
     # Usable gaussian range
-    g_x = max(0,  -ul[0]), min(br[0], img.shape[1]) - ul[0]
+    g_x = max(0, -ul[0]), min(br[0], img.shape[1]) - ul[0]
     g_y = max(0, -ul[1]), min(br[1], img.shape[0]) - ul[1]
     # Image range
     img_x = max(0, ul[0]), min(br[0], img.shape[1])

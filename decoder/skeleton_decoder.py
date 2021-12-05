@@ -61,7 +61,7 @@ class SkeletonDecoder(nn.Module):
                     #     kps[k, 4 * i + 4 - j] = torch.sum(torch.sum(front_pred, dim=0), dim=0)
                     k = k + 1
 
-        return kps * 4
+        return kps
 
     def forward(self, x):
         stacks = len(x)

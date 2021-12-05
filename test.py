@@ -1,21 +1,18 @@
 import os
 
-os.environ["CUDA_VISIBLE_DEVICES"] = '4,5'
+os.environ["CUDA_VISIBLE_DEVICES"] = '5'
 import argparse
 import torch.backends.cudnn as cudnn
 import torch.optim
 import data.eval_utils as eval_utils
-import os.path as osp
 from data.eval_utils import draw_maps
-from data.eval_utils import draw_maps_2
 from data.eval_utils import draw_maps_with_one_bone
-from data.eval_utils import draw_maps_with_one_bone_2
 from data.eval_utils import draw_kps
-from data.RHD import RHD_DataReader_With_File
-from tensorboardX import SummaryWriter
-from datetime import datetime
+from data.rhd_dataset import RHDDateset
 from progress.bar import Bar
 import numpy as np
+
+import pickle
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 cudnn.benchmark = True
@@ -121,33 +118,70 @@ if __name__ == '__main__':
 
     parser.add_argument(
         '-batch',
-        '--batch_size',
+        '--train_batch',
         type=int,
-        default=64,
+        default=4,
+        help='The index of sample image'
+    )
+
+    parser.add_argument(
+        '--test_batch',
+        type=int,
+        default=4,
         help='The index of sample image'
     )
 
     args = parser.parse_args()
 
-    hand_crop, hand_flip, use_wrist, BL, root_id, rotate, uv_sigma = True, True, True, 'small', 12, 180, 0.0
+    print("\nCREATE DATASET...")
+    train_dataset = RHDDateset('RHD_published_v2/', 'training', input_size=256, output_full=True, aug=False)
+    val_dataset = RHDDateset('RHD_published_v2/', 'evaluation', input_size=256, output_full=True, aug=False)
 
-    val_dataset = RHD_DataReader_With_File(mode="evaluation", path="data_v2.0")
-    print("val dataset size: ", val_dataset.__len__())
-    val_loader = torch.utils.data.DataLoader(
-        val_dataset,
-        batch_size=args.batch_size,
-        shuffle=False,
-        pin_memory=True
-    )
+    print("Total train dataset size: {}".format(len(train_dataset)))
+    print("Total test dataset size: {}".format(len(val_dataset)))
 
-    train_dataset = RHD_DataReader_With_File(mode="training", path="data_v2.0")
-    print("train dataset size: ", train_dataset.__len__())
+    print("\nLOAD DATASET...")
     train_loader = torch.utils.data.DataLoader(
         train_dataset,
-        batch_size=args.batch_size,
+        batch_size=args.train_batch,
+        shuffle=True,
+        pin_memory=True
+    )
+    val_loader = torch.utils.data.DataLoader(
+        val_dataset,
+        batch_size=args.test_batch,
         shuffle=False,
         pin_memory=True
     )
+
+    '''Store the cropped image and corresponding heatmap'''
+    inner_index = args.sample_index % args.train_batch
+    batch_index = args.sample_index // args.train_batch
+    out = []
+    for i, sample in enumerate(train_loader):
+        if i == 0:
+            vis = sample['vis21']
+            hm = sample['hm']
+            target = sample["uv_crop"]
+            predict = eval_utils.get_heatmap_pred(hm)
+            print("sample[uv_crop][0]", target[0])
+            print("eval_utils.get_heatmap_pred(sample['hm'])[0]", predict[0])
+            print("MeanEPE", eval_utils.MeanEPE(predict * vis[:, :, None] * 4, target * vis[:, :, None] * 4))
+        else:
+            break
+        # for j in range(args.train_batch):
+        #     sample_num = i * args.train_batch + j
+        #     if sample_num >= 20:
+        #         break
+        #     img_crop = sample["img_crop"][j]
+        #     uv_crop = sample["uv_crop"][j]
+        #     hm = sample["hm"][j]
+        #     out = [img_crop, uv_crop, hm]
+        #     with open(f'sample/uv_crop_{sample_num}.pickle', 'wb') as f:
+        #         pickle.dump(out, f)
+        # if i > 20 / args.train_batch + 1:
+        #     break
+
 
     '''Ground Truth Test'''
     # hm_example = []
@@ -203,59 +237,59 @@ if __name__ == '__main__':
     # print("accH: {}".format(am_accH.avg))
 
     '''Check correspondence of a certain sample'''
-    hm_example = []
-    kp_example = None
-    image = []
-    front_dis = []
-    front_vec = []
-    back_dis = []
-    back_vec = []
-    ske_mask = []
-    weit_map = []
-    vis = []
-    dis = []
-    kps = []
-
-    stop = -1
-    inner_index = args.sample_index % args.batch_size
-    batch_index = args.sample_index // args.batch_size
-    am_accH = AverageMeter()
-    for i, sample in enumerate(val_loader):
-        if i == batch_index:
-            image = sample["img_crop"]
-            mask = sample["mask_crop"]
-            front_vec = sample["front_vec"]
-            front_dis = sample["front_dis"]
-            back_vec = sample["back_vec"]
-            back_dis = sample["back_dis"]
-            ske_mask = sample["skeleton"]
-            weit_map = sample["weit_map"]
-            vis = sample['vis21']
-            kps = sample['uv_crop']
-
-
-    img = torch_to_numpy(image[inner_index])
-    test_kps = eval_utils.maps_to_kp_2(front_vec.to(device), front_dis.to(device), back_vec.to(device), back_dis.to(device), ske_mask.to(device), device, res=64)
-    test_kps = test_kps[inner_index].cpu().detach().numpy()
-    front_vec = front_vec[inner_index].cpu().detach().numpy()
-    front_dis = front_dis[inner_index].cpu().detach().numpy()
-    back_vec = back_vec[inner_index].cpu().detach().numpy()
-    back_dis = back_dis[inner_index].cpu().detach().numpy()
-    ske_mask = ske_mask[inner_index].cpu().detach().numpy()
-    weit_map = weit_map[inner_index].cpu().detach().numpy()
-    # vis = vis[inner_index].cpu().detach().numpy()
-    # print("test_kps")
-    # print(test_kps)
-    # val_p = eval_utils.MeanEPE(test_kps[None, :, :] * vis[None, :, None].to(device),
-    #                            kps[inner_index][None, :, :].to(device) * vis[None, :, None].to(device))
-    # print("targ_kps")
-    # print(kps[inner_index])
-    # print("accH: ", val_p)
-    # print(test_kps.shape)
-    test_kps = np.ascontiguousarray(test_kps, dtype=np.uint8)
-    draw_kps(test_kps, img, args.sample_index, "targ")
-    draw_maps_2(front_vec, front_dis, back_vec, back_dis, ske_mask, weit_map, args.sample_index, "targ")
-    draw_maps_with_one_bone_2(front_vec, front_dis, back_vec, back_dis, ske_mask, weit_map, args.sample_index, "targ")
+    # hm_example = []
+    # kp_example = None
+    # image = []
+    # front_dis = []
+    # front_vec = []
+    # back_dis = []
+    # back_vec = []
+    # ske_mask = []
+    # weit_map = []
+    # vis = []
+    # dis = []
+    # kps = []
+    #
+    # stop = -1
+    # inner_index = args.sample_index % args.batch_size
+    # batch_index = args.sample_index // args.batch_size
+    # am_accH = AverageMeter()
+    # for i, sample in enumerate(val_loader):
+    #     if i == batch_index:
+    #         image = sample["img_crop"]
+    #         mask = sample["mask_crop"]
+    #         front_vec = sample["front_vec"]
+    #         front_dis = sample["front_dis"]
+    #         back_vec = sample["back_vec"]
+    #         back_dis = sample["back_dis"]
+    #         ske_mask = sample["skeleton"]
+    #         weit_map = sample["weit_map"]
+    #         vis = sample['vis21']
+    #         kps = sample['uv_crop']
+    #
+    #
+    # img = torch_to_numpy(image[inner_index])
+    # test_kps = eval_utils.maps_to_kp_2(front_vec.to(device), front_dis.to(device), back_vec.to(device), back_dis.to(device), ske_mask.to(device), device, res=64)
+    # test_kps = test_kps[inner_index].cpu().detach().numpy()
+    # front_vec = front_vec[inner_index].cpu().detach().numpy()
+    # front_dis = front_dis[inner_index].cpu().detach().numpy()
+    # back_vec = back_vec[inner_index].cpu().detach().numpy()
+    # back_dis = back_dis[inner_index].cpu().detach().numpy()
+    # ske_mask = ske_mask[inner_index].cpu().detach().numpy()
+    # weit_map = weit_map[inner_index].cpu().detach().numpy()
+    # # vis = vis[inner_index].cpu().detach().numpy()
+    # # print("test_kps")
+    # # print(test_kps)
+    # # val_p = eval_utils.MeanEPE(test_kps[None, :, :] * vis[None, :, None].to(device),
+    # #                            kps[inner_index][None, :, :].to(device) * vis[None, :, None].to(device))
+    # # print("targ_kps")
+    # # print(kps[inner_index])
+    # # print("accH: ", val_p)
+    # # print(test_kps.shape)
+    # test_kps = np.ascontiguousarray(test_kps, dtype=np.uint8)
+    # draw_kps(test_kps, img, args.sample_index, "targ")
+    # draw_maps_2(front_vec, front_dis, back_vec, back_dis, ske_mask, weit_map, args.sample_index, "targ")
+    # draw_maps_with_one_bone_2(front_vec, front_dis, back_vec, back_dis, ske_mask, weit_map, args.sample_index, "targ")
 
     '''Validation maps of a trained example'''
     # hm_example = []

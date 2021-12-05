@@ -1,6 +1,6 @@
 import os
 
-os.environ["CUDA_VISIBLE_DEVICES"] = '7'
+os.environ["CUDA_VISIBLE_DEVICES"] = '2'
 
 import os.path as osp
 
@@ -20,8 +20,10 @@ from tensorboardX import SummaryWriter
 import data.eval_utils as eval_utils
 from data.eval_utils import AverageMeter
 from data.RHD import RHD_DataReader_With_File
+from data.rhd_dataset import RHDDateset
 from network.hourglass import NetStackedHourglass
 from loss.heatmap_loss import HeatmapLoss
+from pose_resnet_baseline import pose_resnet101_heatmap
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -30,7 +32,8 @@ cudnn.benchmark = True
 
 def main(args):
     print("\nCREATE NETWORK")
-    model = NetStackedHourglass()
+    # model = NetStackedHourglass()
+    model = pose_resnet101_heatmap()
     model = model.to(device)
 
     criterion = HeatmapLoss()
@@ -46,18 +49,10 @@ def main(args):
     )
 
     print("\nCREATE DATASET...")
-    hand_crop, hand_flip, use_wrist, BL, root_id, rotate, uv_sigma = True, True, True, 'small', 12, 180, 0.0
-    # train_dataset = RHD_DataReader(path=args.data_root, mode='training', hand_crop=hand_crop, use_wrist_coord=use_wrist,
-    #                                sigma=5,
-    #                                data_aug=False, uv_sigma=uv_sigma, rotate=rotate, BL=BL, root_id=root_id,
-    #                                right_hand_flip=hand_flip, crop_size_input=256)
-    #
-    # val_dataset = RHD_DataReader(path=args.data_root, mode='evaluation', hand_crop=hand_crop, use_wrist_coord=use_wrist,
-    #                              sigma=5,
-    #                              data_aug=False, uv_sigma=uv_sigma, rotate=rotate, BL=BL, root_id=root_id,
-    #                              right_hand_flip=hand_flip, crop_size_input=256)
-    train_dataset = RHD_DataReader_With_File(mode="training", path="data_v2.0")
-    val_dataset = RHD_DataReader_With_File(mode="evaluation", path="data_v2.0")
+    # train_dataset = RHD_DataReader_With_File(mode="training", path="data_v2.0")
+    # val_dataset = RHD_DataReader_With_File(mode="evaluation", path="data_v2.0")
+    train_dataset = RHDDateset('RHD_published_v2/', 'training', input_size=256, output_full=True, aug=True)
+    val_dataset = RHDDateset('RHD_published_v2/', 'evaluation', input_size=256, output_full=True, aug=False)
 
     print("Total train dataset size: {}".format(len(train_dataset)))
     print("Total test dataset size: {}".format(len(val_dataset)))
@@ -66,7 +61,7 @@ def main(args):
     train_loader = torch.utils.data.DataLoader(
         train_dataset,
         batch_size=args.train_batch,
-        shuffle=False,
+        shuffle=True,
         num_workers=args.workers,
         pin_memory=True
     )
@@ -86,7 +81,6 @@ def main(args):
         last_epoch=args.start_epoch
     )
 
-    best_acc = 0
     loss_log_dir = osp.join('tensorboard', f'baseline_loss_{datetime.now().strftime("%Y%m%d_%H%M")}')
     loss_writer = SummaryWriter(log_dir=loss_log_dir)
     error_log_dir = osp.join('tensorboard', f'baseline_error_{datetime.now().strftime("%Y%m%d_%H%M")}')
@@ -105,22 +99,19 @@ def main(args):
             args=args,
         )
         ##################################################
-        val_indicator = best_acc
         if epoch % 5 == 4:
             train_indicator = validate(train_loader, model, criterion, args=args)
             val_indicator = validate(val_loader, model, criterion, args=args)
             print(f'Save skeleton_model.pkl after {epoch + 1} epochs')
             error_writer.add_scalar('Validation Indicator', val_indicator, epoch)
             error_writer.add_scalar('Training Indicator', train_indicator, epoch)
-            torch.save(model, f'trained_model_baseline/skeleton_model_after_{epoch + 1}_epochs.pkl')
-        if val_indicator > best_acc:
-            best_acc = val_indicator
+            torch.save(model, f'trained_model_baseline/model_sigma3_after_{epoch + 1}_epochs.pkl')
         scheduler.step()
 
         # Draw the loss curve and validation indicator curve
         loss_writer.add_scalar('Loss', loss_avg.avg, epoch)
     print("\nSave model as hourglass_model.pkl...")
-    torch.save(model, 'trained_model_baseline/hourglass_model.pkl')
+    torch.save(model, 'trained_model_baseline/model_sigma3.pkl')
     cprint('All Done', 'yellow', attrs=['bold'])
     return 0  # end of main
 
@@ -140,7 +131,8 @@ def one_forward_pass(sample, model, criterion, args, is_training=True):
     hm_veil = sample['hm_veil'].to(device, non_blocking=True)
     infos = {
         'hm_veil': hm_veil,
-        'batch_size': args.train_batch
+        'batch_size': args.train_batch,
+        'vis': vis
     }
 
     targets = {
@@ -173,10 +165,16 @@ def train(train_loader, model, criterion, optimizer, args):
     model.train()
     bar = Bar('\033[31m Train \033[0m', max=len(train_loader))
     for i, sample in enumerate(train_loader):
+
         data_time.update(time.time() - last)
         results, targets, loss = one_forward_pass(
             sample, model, criterion, args, is_training=True
         )
+        # target = sample['hm']
+        # gts = eval_utils.get_heatmap_pred(target).float()
+        # print(gts[0] * 4)
+        # pds = eval_utils.get_heatmap_pred(results[0][-1]).float()
+        # print(pds[0] * 4)
         am_loss_hm.update(
             loss.item(), targets['batch_size']
         )
@@ -215,7 +213,7 @@ def validate(val_loader, model, criterion, args, stop=-1):
                 metas, model, criterion, args, is_training=False
             )
             val = eval_utils.accuracy_heatmap(
-                results[0][-1],
+                results,
                 targets['hm'],
                 targets['vis'][:, :, None]
             )
@@ -337,7 +335,7 @@ if __name__ == '__main__':
     )
     parser.add_argument(
         "--lr_decay_step",
-        default=50,
+        default=30,
         type=int,
         help="Epochs after which to decay learning rate",
     )

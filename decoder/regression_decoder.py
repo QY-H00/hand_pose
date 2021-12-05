@@ -8,6 +8,13 @@ class RegressionDecoder(nn.Module):
         self.linear = nn.Linear(features, classes * 2)
 
     def forward(self, x):
+        # print(x)
         out = self.linear(x)  # (batch_size, classes*2)
+        # print("out")
+        # print(out)
         out = out.reshape(out.shape[0], self.classes, 2)  # (batch_size, classes, 2)
-        return out
+        # print("out.reshape")
+        # print(out)
+        res = list()
+        res.append(out)
+        return res

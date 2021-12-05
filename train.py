@@ -46,6 +46,7 @@ def set_method(parser):
         help='true if using the sekeleton based model'
     )
 
+
 def set_dataset(parser):
     parser.add_argument(
         '-dr',
@@ -192,8 +193,8 @@ if __name__ == '__main__':
         train_baseline.main(args)
     elif args.softargmax:
         train_softargmax.main(args)
-    elif args.skeleton:
-        train_skeleton.main(args)
     elif args.regression:
         train_regression.main(args)
+    elif args.skeleton:
+        train_skeleton.main(args)
 

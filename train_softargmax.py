@@ -1,6 +1,6 @@
 import os
 
-os.environ["CUDA_VISIBLE_DEVICES"] = '7'
+os.environ["CUDA_VISIBLE_DEVICES"] = '1'
 
 import os.path as osp
 
@@ -11,19 +11,21 @@ import torch.utils.data
 import torch.nn as nn
 import torch.nn.parallel
 import torch.backends.cudnn as cudnn
-import torch.nn.functional as torch_f
 import torch.optim
 from progress.bar import Bar
 from termcolor import cprint
 from datetime import datetime
 from tensorboardX import SummaryWriter
 
+from network.hourglass import NetStackedHourglass
 import data.eval_utils as eval_utils
 from data.eval_utils import AverageMeter
 from data.RHD import RHD_DataReader_With_File
-from models.hourglass import NetStackedHourglass
+from data.rhd_dataset import RHDDateset
 from decoder.softargmax_decoder import SoftargmaxDecoder
 from loss.keypoint_loss import KeypointLoss
+from pose_resnet_baseline import pose_resnet101_heatmap
+
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -31,10 +33,9 @@ cudnn.benchmark = True
 
 
 def main(args):
-    best_acc = 0
-
     print("\nCREATE NETWORK")
-    encoder = NetStackedHourglass()
+    # encoder = NetStackedHourglass()
+    encoder = pose_resnet101_heatmap()
     decoder = SoftargmaxDecoder()
     model = nn.Sequential(encoder, decoder)
     model = model.to(device)
@@ -52,18 +53,10 @@ def main(args):
     )
 
     print("\nCREATE DATASET...")
-    hand_crop, hand_flip, use_wrist, BL, root_id, rotate, uv_sigma = True, True, True, 'small', 12, 180, 0.0
-    # train_dataset = RHD_DataReader(path=args.data_root, mode='training', hand_crop=hand_crop, use_wrist_coord=use_wrist,
-    #                                sigma=5,
-    #                                data_aug=False, uv_sigma=uv_sigma, rotate=rotate, BL=BL, root_id=root_id,
-    #                                right_hand_flip=hand_flip, crop_size_input=256)
-    #
-    # val_dataset = RHD_DataReader(path=args.data_root, mode='evaluation', hand_crop=hand_crop, use_wrist_coord=use_wrist,
-    #                              sigma=5,
-    #                              data_aug=False, uv_sigma=uv_sigma, rotate=rotate, BL=BL, root_id=root_id,
-    #                              right_hand_flip=hand_flip, crop_size_input=256)
-    train_dataset = RHD_DataReader_With_File(mode="training", path="data_v2.0")
-    val_dataset = RHD_DataReader_With_File(mode="evaluation", path="data_v2.0")
+    # train_dataset = RHD_DataReader_With_File(mode="training", path="data_v2.0")
+    # val_dataset = RHD_DataReader_With_File(mode="evaluation", path="data_v2.0")
+    train_dataset = RHDDateset('RHD_published_v2/', 'training', input_size=256, output_full=True, aug=True)
+    val_dataset = RHDDateset('RHD_published_v2/', 'evaluation', input_size=256, output_full=True, aug=False)
 
     print("Total train dataset size: {}".format(len(train_dataset)))
     print("Total test dataset size: {}".format(len(val_dataset)))
@@ -72,7 +65,7 @@ def main(args):
     train_loader = torch.utils.data.DataLoader(
         train_dataset,
         batch_size=args.train_batch,
-        shuffle=False,
+        shuffle=True,
         num_workers=args.workers,
         pin_memory=True
     )
@@ -92,10 +85,9 @@ def main(args):
         last_epoch=args.start_epoch
     )
 
-    best_acc = 0
-    loss_log_dir = osp.join('tensorboard', f'baseline_loss_{datetime.now().strftime("%Y%m%d_%H%M")}')
+    loss_log_dir = osp.join('tensorboard', f'softargmax_loss_{datetime.now().strftime("%Y%m%d_%H%M")}')
     loss_writer = SummaryWriter(log_dir=loss_log_dir)
-    error_log_dir = osp.join('tensorboard', f'baseline_error_{datetime.now().strftime("%Y%m%d_%H%M")}')
+    error_log_dir = osp.join('tensorboard', f'softargmax_error_{datetime.now().strftime("%Y%m%d_%H%M")}')
     error_writer = SummaryWriter(log_dir=error_log_dir)
 
     for epoch in range(args.start_epoch, args.epochs + 1):
@@ -111,22 +103,19 @@ def main(args):
             args=args,
         )
         ##################################################
-        val_indicator = best_acc
         if epoch % 5 == 4:
             train_indicator = validate(train_loader, model, criterion, args=args)
             val_indicator = validate(val_loader, model, criterion, args=args)
             print(f'Save skeleton_model.pkl after {epoch + 1} epochs')
             error_writer.add_scalar('Validation Indicator', val_indicator, epoch)
             error_writer.add_scalar('Training Indicator', train_indicator, epoch)
-            torch.save(model, f'trained_model_hm_soft/skeleton_model_after_{epoch + 1}_epochs.pkl')
-        if val_indicator > best_acc:
-            best_acc = val_indicator
+            torch.save(model, f'trained_model_softargmax/model_after_{epoch + 1}_epochs.pkl')
         scheduler.step()
 
         # Draw the loss curve and validation indicator curve
         loss_writer.add_scalar('Loss', loss_avg.avg, epoch)
     print("\nSave model as hourglass_model.pkl...")
-    torch.save(model, 'trained_model_hm_soft/hourglass_model.pkl')
+    torch.save(model, 'trained_model_softargmax/model.pkl')
     cprint('All Done', 'yellow', attrs=['bold'])
     return 0  # end of main
 
@@ -137,22 +126,14 @@ def one_forward_pass(sample, model, criterion, args, is_training=True):
     kp2d = sample['uv_crop'].to(device, non_blocking=True)
     vis = sample['vis21'].to(device, non_blocking=True)
 
-    ''' heatmap generation '''
-    # need to modify
-    hm = sample['hm'].to(device, non_blocking=True)
-
     ''' prepare infos '''
-    # need to modify
-    hm_veil = sample['hm_veil'].to(device, non_blocking=True)
     infos = {
-        'hm_veil': hm_veil,
         'batch_size': args.train_batch,
         'vis': vis
     }
 
     targets = {
         'clr': img,
-        'hm': hm,
         'kp2d': kp2d,
         'vis': vis
     }
@@ -173,7 +154,7 @@ def one_forward_pass(sample, model, criterion, args, is_training=True):
 def train(train_loader, model, criterion, optimizer, args):
     batch_time = AverageMeter()
     data_time = AverageMeter()
-    am_loss_hm = AverageMeter()
+    am_loss = AverageMeter()
 
     last = time.time()
     # switch to train mode
@@ -184,7 +165,7 @@ def train(train_loader, model, criterion, optimizer, args):
         results, targets, loss = one_forward_pass(
             sample, model, criterion, args, is_training=True
         )
-        am_loss_hm.update(
+        am_loss.update(
             loss.item(), targets['batch_size']
         )
 
@@ -202,12 +183,12 @@ def train(train_loader, model, criterion, optimizer, args):
         ).format(
             batch=i + 1,
             size=len(train_loader),
-            lossH=am_loss_hm.avg
+            lossH=am_loss.avg
         )
         bar.next()
     bar.finish()
 
-    return am_loss_hm
+    return am_loss
 
 
 def validate(val_loader, model, criterion, args, stop=-1):
@@ -221,9 +202,10 @@ def validate(val_loader, model, criterion, args, stop=-1):
             results, targets, loss = one_forward_pass(
                 metas, model, criterion, args, is_training=False
             )
-            pred_kps = results[0][-1]
+            pred_kps = results
             targ_kps = targets['kp2d']
-            val = eval_utils.MeanEPE(pred_kps, targ_kps)
+            vis = targets['vis'][:, :, None]
+            val = eval_utils.MeanEPE(pred_kps * vis * 4, targ_kps * vis)
             bar.suffix = (
                 '({batch}/{size}) '
                 'accH: {accH:.4f} | '

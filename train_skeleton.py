@@ -68,7 +68,7 @@ def main(args):
     val_loader = torch.utils.data.DataLoader(
         eval_dataset,
         batch_size=args.test_batch,
-        shuffle=False,
+        shuffle=True,
         num_workers=args.workers,
         pin_memory=True
     )
@@ -93,7 +93,6 @@ def main(args):
 
     '''Set up the monitor'''
 
-    best_acc = 0
     loss_log_dir = osp.join('tensorboard', f'loss_{datetime.now().strftime("%Y%m%d_%H%M")}')
     loss_writer = SummaryWriter(log_dir=loss_log_dir)
     error_log_dir = osp.join('tensorboard', f'error_{datetime.now().strftime("%Y%m%d_%H%M")}')
@@ -116,7 +115,6 @@ def main(args):
         )
 
         # Validate the correctness every 5 epochs
-        val_indicator = best_acc
         if epoch % 5 == 4:
             train_indicator = validate(train_loader, model, criterion, args=args)
             val_indicator = validate(val_loader, model, criterion, args=args)
@@ -124,8 +122,6 @@ def main(args):
             error_writer.add_scalar('Validation Indicator', val_indicator, epoch)
             error_writer.add_scalar('Training Indicator', train_indicator, epoch)
             torch.save(model, f'trained_model_v1.6/skeleton_model_after_{epoch + 1}_epochs.pkl')
-        if val_indicator > best_acc:
-            best_acc = val_indicator
 
         # Draw the loss curve and validation indicator curve
         loss_writer.add_scalar('Loss', loss_avg, epoch)
