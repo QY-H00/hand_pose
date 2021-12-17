@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="WebServers">
+    <option name="servers">
+      <webServer id="06d5e9a8-a08f-4515-9106-1e78575e85f6" name="gruyere">
+        <fileTransfer accessType="SFTP" host="gruyere-1.d2.comp.nus.edu.sg" port="22" sshConfigId="1d170b9c-6919-4538-95b5-dc399ed05395" sshConfig="qiyuan@gruyere-1.d2.comp.nus.edu.sg:22 password">
+          <advancedOptions>
+            <advancedOptions dataProtectionLevel="Private" passiveMode="true" shareSSLContext="true" />
+          </advancedOptions>
+        </fileTransfer>
+      </webServer>
+    </option>
+  </component>
+</project>

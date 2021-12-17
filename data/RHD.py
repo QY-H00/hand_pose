@@ -8,14 +8,15 @@ from __future__ import print_function
 import cv2, pickle
 import os.path as osp
 import numpy as np
-from skimage import io, transform
+from skimage import io
 import torch
-from torch.utils.data import Dataset, DataLoader
-from torchvision import transforms, utils
+from torch.utils.data import Dataset
+from torchvision import transforms
 import torchvision.transforms.functional as TF
-import eval_utils
+from data import eval_utils
 
-__all__ = ["RHD_DataReader"]
+__all__ = ["RHD_DataReader", "RHD_DataReader_With_File"]
+training_volume = 21
 
 
 def get_hand_flag(hand_parts):
@@ -44,6 +45,44 @@ def coord_normalize(coord, root_id, BL):
     coord_norm = coord_rel / bone_length  # normalized by length of 12->11(12->0)
 
     return coord_norm, bone_length
+
+
+def custom_collate(dict):
+    return RHD_DataReader_With_File(dict)
+
+
+class RHD_DataReader_With_File(Dataset):
+
+    def __init__(self, path=None, mode=None):
+        assert (mode == 'training' or mode == 'evaluation'), RuntimeError('Unrecognized mode')
+        self.path, self.mode = path, mode
+
+        if mode == 'evaluation':
+            # path_to_anno is the path it goes into the corresponding folder in the RHD foloder
+            path_to_anno = f'processed_data_{mode}.pickle' if path is None else osp.join(path,
+                                                                                         f'processed_data_{mode}.pickle')
+            fi = open(path_to_anno, 'rb')
+            self.anno_all_evaluation = pickle.load(fi)
+            fi.close()
+            self.length = int(len(self.anno_all_evaluation))
+
+        if mode == 'training':
+            self.length = 41258
+
+    def __len__(self):
+        return self.length
+
+    def __getitem__(self, idx):
+        if self.mode == 'evaluation':
+            return self.anno_all_evaluation[idx]
+        else:
+            path = f'processed_training_data/processed_data_{self.mode}_{idx}.pickle' if self.path is None \
+               else osp.join(self.path, f'processed_training_data/processed_data_{self.mode}_{idx}.pickle')
+            fi = open(path, 'rb')
+            sample = pickle.load(fi)
+            fi.close()
+            del sample['bone_vis']  # Need to re-process the data
+            return sample
 
 
 class RHD_DataReader(Dataset):
@@ -109,7 +148,7 @@ class RHD_DataReader(Dataset):
         return int(len(self.anno_all.items()))
 
     def __getitem__(self, idx):
-        
+
         """READ DATA"""
         # 1. read image
         # {'%.5d.png' % idx} means if idx is 1234, then it should be 01234.png
@@ -205,7 +244,7 @@ class RHD_DataReader(Dataset):
             crop_size = np.max(2 * np.maximum(max_coord - crop_center, crop_center - min_coord))
             crop_size = 1.2 * np.clip(crop_size, 30, 500)
             crop_center_tmp = 0.5 * (
-                        min_coord + max_coord)  # using this will make the whole hand in the center of picture
+                    min_coord + max_coord)  # using this will make the whole hand in the center of picture
 
             m_coord = np.tile(crop_center_tmp.reshape(-1, 1), [1, 2]) + np.array(
                 [-crop_size / 2, crop_size / 2]).reshape(2, )
@@ -273,6 +312,9 @@ class RHD_DataReader(Dataset):
                 hm_veil[i] *= aval
                 kps.append(kp)
 
+            self.hm = hm
+            self.hm_veil = hm_veil
+
         if self.right_hand_flip:
             if self.hand_side == 0:
                 # flip left hands to right hands
@@ -302,9 +344,47 @@ class RHD_DataReader(Dataset):
             if kp[1] > self.hm_res:
                 kp[1] = self.hm_res - 1
 
-        # print(self.kp_uv21_crop)
-        self.flux_map, self.dis_map = eval_utils.kp_to_maps(hm_uv_crop, res=self.hm_res)
-        # print("finsh one sample")
+        # # Version 1.0
+        # self.flux_map, self.dis_map = eval_utils.kp_to_maps(hm_uv_crop, res=self.hm_res)
+
+        # sample = {'img_crop': self.img_crop,
+        #           'mask_crop': self.mask_crop,
+        #           'crop_scale': self.crop_scale,
+        #           'uv_crop': self.kp_uv21_crop,  # dimension: [21, 2]
+        #           'vis21': self.kp_vis21,
+        #           'xyz': self.kp_xyz_rotate,
+        #           'xyz_norm': self.kp_xyz21_norm,
+        #           'norm_scale': self.kp_norm_scale,
+        #           'K': self.cam_mat_crop,
+        #           'hm': hm,
+        #           'hm_veil': hm_veil,
+        #           "flux_map": self.flux_map,
+        #           "dis_map": self.dis_map
+        #           }
+
+        # Version 2.0
+        self.front_vec, self.front_dis, self.back_vec, self.back_dis, self.binary_skeleton, self.weights \
+            = eval_utils.kp_to_maps_2(hm_uv_crop, res=self.hm_res)
+        self.bone_vis = eval_utils.process_generating_bone_vis(self.kp_vis21)
+
+        # print('img_crop:', type(self.img_crop))
+        # print('mask_crop:', type(self.mask_crop))
+        # print('crop_scale:', type(self.crop_scale))
+        # print('uv_crop:', type(self.kp_uv21_crop))
+        # print("vis21:", type(self.kp_vis21))
+        # print('xyz:', type(self.kp_xyz_rotate))
+        # print('xyz_norm:', type(self.kp_xyz21_norm))
+        # print('norm_scale:', type(self.kp_norm_scale))
+        # print('K:', type(self.cam_mat_crop))
+        # print("front_vec:", type(self.front_vec))
+        # print("front_dis:", type(self.front_dis))
+        # print("back_vec:", type(self.back_vec))
+        # print("back_dis:", type(self.back_dis))
+        # print("skeleton:", type(self.binary_skeleton))
+        # print("weit_map:", type(self.weights))
+        # print("bone_vis:", type(self.bone_vis))
+        # print('hm:', type(self.hm))
+        # print('hm_veil:', type(self.hm_veil))
 
         sample = {'img_crop': self.img_crop,
                   'mask_crop': self.mask_crop,
@@ -315,10 +395,15 @@ class RHD_DataReader(Dataset):
                   'xyz_norm': self.kp_xyz21_norm,
                   'norm_scale': self.kp_norm_scale,
                   'K': self.cam_mat_crop,
-                  'hm': hm,
-                  'hm_veil': hm_veil,
-                  "flux_map": self.flux_map,
-                  "dis_map": self.dis_map
+                  "front_vec": self.front_vec,
+                  "front_dis": self.front_dis,
+                  "back_vec": self.back_vec,
+                  "back_dis": self.back_dis,
+                  "skeleton": self.binary_skeleton,
+                  "weit_map": self.weights,
+                  "bone_vis": self.bone_vis,
+                  'hm': self.hm,
+                  'hm_veil': self.hm_veil
                   }
 
         return sample

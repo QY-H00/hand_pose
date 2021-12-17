@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
-  <component name="PublishConfigData" autoUpload="Always" remoteFilesAllowedToDisappearOnAutoupload="false" showNewOnTargetInSync="false">
+  <component name="PublishConfigData" autoUpload="Always" serverName="lab_gpu_server_sbrinz" remoteFilesAllowedToDisappearOnAutoupload="false" showNewOnTargetInSync="false">
     <serverData>
-      <paths name="heqiyuan@tilsiter.d2.comp.nus.edu.sg:22 password (1)">
+      <paths name="gruyere">
         <serverdata>
           <mappings>
-            <mapping deploy="/home/heqiyuan/skeleton_estimation" local="$PROJECT_DIR$" />
+            <mapping deploy="/home/qiyuan/skeleton" local="$PROJECT_DIR$" web="/" />
           </mappings>
         </serverdata>
       </paths>
@@ -13,6 +13,13 @@
         <serverdata>
           <mappings>
             <mapping deploy="/home/heqiyuan/skeleton_estimation" local="$PROJECT_DIR$" />
+          </mappings>
+        </serverdata>
+      </paths>
+      <paths name="lab_gpu_server_sbrinz">
+        <serverdata>
+          <mappings>
+            <mapping deploy="/home/qiyuan/skeleton_estimation" local="$PROJECT_DIR$" web="/" />
           </mappings>
         </serverdata>
       </paths>
