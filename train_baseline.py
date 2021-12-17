@@ -1,6 +1,6 @@
 import os
 
-os.environ["CUDA_VISIBLE_DEVICES"] = '2'
+os.environ["CUDA_VISIBLE_DEVICES"] = '6, 7'
 
 import os.path as osp
 
@@ -51,8 +51,8 @@ def main(args):
     print("\nCREATE DATASET...")
     # train_dataset = RHD_DataReader_With_File(mode="training", path="data_v2.0")
     # val_dataset = RHD_DataReader_With_File(mode="evaluation", path="data_v2.0")
-    train_dataset = RHDDateset('RHD_published_v2/', 'training', input_size=256, output_full=True, aug=True)
-    val_dataset = RHDDateset('RHD_published_v2/', 'evaluation', input_size=256, output_full=True, aug=False)
+    train_dataset = RHDDateset('RHD_published_v2/', 'training', input_size=256, output_full=True, aug=True, sigma=args.sigma)
+    val_dataset = RHDDateset('RHD_published_v2/', 'evaluation', input_size=256, output_full=True, aug=False, sigma=args.sigma)
 
     print("Total train dataset size: {}".format(len(train_dataset)))
     print("Total test dataset size: {}".format(len(val_dataset)))
@@ -81,9 +81,9 @@ def main(args):
         last_epoch=args.start_epoch
     )
 
-    loss_log_dir = osp.join('tensorboard', f'baseline_loss_{datetime.now().strftime("%Y%m%d_%H%M")}')
+    loss_log_dir = osp.join('tensorboard', f'baseline_sigma{args.sigma}_loss_{datetime.now().strftime("%Y%m%d_%H%M")}')
     loss_writer = SummaryWriter(log_dir=loss_log_dir)
-    error_log_dir = osp.join('tensorboard', f'baseline_error_{datetime.now().strftime("%Y%m%d_%H%M")}')
+    error_log_dir = osp.join('tensorboard', f'baseline_sigma{args.sigma}_error_{datetime.now().strftime("%Y%m%d_%H%M")}')
     error_writer = SummaryWriter(log_dir=error_log_dir)
 
     for epoch in range(args.start_epoch, args.epochs + 1):
@@ -105,13 +105,13 @@ def main(args):
             print(f'Save skeleton_model.pkl after {epoch + 1} epochs')
             error_writer.add_scalar('Validation Indicator', val_indicator, epoch)
             error_writer.add_scalar('Training Indicator', train_indicator, epoch)
-            torch.save(model, f'trained_model_baseline/model_sigma3_after_{epoch + 1}_epochs.pkl')
+            torch.save(model, f'trained_model_baseline/model_sigma{args.sigma}_after_{epoch + 1}_epochs.pkl')
         scheduler.step()
 
         # Draw the loss curve and validation indicator curve
         loss_writer.add_scalar('Loss', loss_avg.avg, epoch)
     print("\nSave model as hourglass_model.pkl...")
-    torch.save(model, 'trained_model_baseline/model_sigma3.pkl')
+    torch.save(model, f'trained_model_baseline/model_sigma{args.sigma}.pkl')
     cprint('All Done', 'yellow', attrs=['bold'])
     return 0  # end of main
 
@@ -358,6 +358,11 @@ if __name__ == '__main__':
         action='store_true',
         help='Calculate upstream loss',
         default=True
+    )
+    parser.add_argument(
+        "--sigma",
+        default=3,
+        type=int
     )
 
     main(parser.parse_args())

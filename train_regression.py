@@ -1,6 +1,6 @@
 import os
 
-os.environ["CUDA_VISIBLE_DEVICES"] = '7'
+os.environ["CUDA_VISIBLE_DEVICES"] = '6, 7'
 
 import os.path as osp
 
@@ -36,8 +36,8 @@ def main(args):
     # encoder = ResNet(pretrained=True)
     # decoder = RegressionDecoder()
     # model = nn.Sequential(encoder, decoder)
-    # model = pose_resnet101_coordinate()
-    model = ResNet(pretrained=True)
+    model = pose_resnet101_coordinate()
+    # model = ResNet(pretrained=True)
     model = model.to(device)
 
     criterion = KeypointLoss()

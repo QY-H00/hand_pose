@@ -10,9 +10,10 @@ from data.util import RHD2Bighand_skeidx, root_idx, wrist_idx, norm_idx
 from data.base_dataset import BaseDataset
 
 class RHDDateset(BaseDataset):
-    def __init__(self, path_name, mode, input_size = 64, output_size = 64, bbs_scale = 1.1, output_full = False, aug = True):
+    def __init__(self, path_name, mode, input_size = 64, output_size = 64, bbs_scale = 1.1, output_full = False, aug = True, sigma=3):
         super().__init__(path_name, 'rhd', mode, input_size, output_size, bbs_scale, output_full, aug)
 
+        self.sigma = sigma
         with open(os.path.join(path_name + self.mode, 'anno_%s.pickle' % self.mode), 'rb') as fi:
             self.anno_all = pickle.load(fi)
             self.num_samples = len(self.anno_all)
@@ -67,8 +68,7 @@ class RHDDateset(BaseDataset):
             # kp = (
             #         (uv_crop[i] / crop_size) * hm_res
             # ).astype(np.int32)  # kp uv: [0~256] -> [0~64]
-            sigma = 3
-            hm[i], aval = eval_utils.gen_heatmap(hm[i], uv_crop[i], sigma)
+            hm[i], aval = eval_utils.gen_heatmap(hm[i], uv_crop[i], self.sigma)
             hm_veil[i] *= aval
         target['hm'] = hm
         target['hm_veil'] = hm_veil

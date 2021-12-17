@@ -3,6 +3,7 @@
   <component name="SshConfigs">
     <configs>
       <sshConfig authType="PASSWORD" host="sbrinz.d2.comp.nus.edu.sg" id="7632b297-e902-4ddf-9053-7b42f887f390" port="22" nameFormat="DESCRIPTIVE" username="qiyuan" />
+      <sshConfig authType="PASSWORD" host="gruyere-1.d2.comp.nus.edu.sg" id="1d170b9c-6919-4538-95b5-dc399ed05395" port="22" nameFormat="DESCRIPTIVE" username="qiyuan" />
     </configs>
   </component>
 </project>
